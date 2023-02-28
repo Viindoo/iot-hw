@@ -1,0 +1,73 @@
+{% extends "layout.html" %}
+{% from "loading.html" import loading_block_ui %}
+{% block head %}
+    <script>
+        $(document).ready(function () {
+            $('#server-login').submit(function(e){
+                e.preventDefault();
+                $('.loading-block').removeClass('o_hide');
+                $.ajax({
+                    url: '/server_login',
+                    type: 'post',
+                    data: $('#server-login').serialize(),
+
+                }).done(function (result) {
+                    data = JSON.parse(result)
+                    if ( data.code_id == 200 ){
+                        window.location.href='./'
+                    }else{
+                        alert(data.error_message)
+                        $('.loading-block').addClass('o_hide');
+                    }
+                
+                }).fail(function () {
+                    $('.message-status').html('Login To Server Error <br> Redirect to IoT Box');
+                    rebootTime = 6000
+                    setTimeout(function () {
+                            location.reload(true);
+                    }, rebootTime );
+                });
+            });
+        });
+    </script>
+{% endblock %}
+{% block content %}
+    <h2 class="text-center">IoT Login Server</h2>
+    <p>
+        Please enter username and password.
+    </p>
+    <form id="server-login" action='/server_login' method='POST'>
+        <style>
+            input[value='Cancel']{
+                margin-left: 15px;
+                width:50px ;
+                text-align: center;
+            }
+        </style>
+        <table align="center">
+            <input type="hidden" name="url_server" value="{{ url_server }}">
+            <tr>
+                <td>User Name</td>
+                <td><input type="text" name="user_name"></td>
+            </tr>
+            <tr>
+                <td>Password</td>
+                <td><input type="password" name="password"></td>
+            </tr>
+            <tr>
+                <td></td>
+                <td><input class="btn" type="submit" value="Connect"/> <input class="btn" value="Cancel" onclick="window.location.href='./'"/> </td>
+            </tr>
+        </table>
+        <p class="text-center font-small">
+            Your current server <strong>{{ server_status }}</strong>
+        </p>
+        {{ loading_block_ui(loading_message) }}
+    </form>
+    <div class="text-center font-small" style="margin: 10px auto;">
+        You can clear the server configuration
+        <form style="display: inline-block;margin-left: 4px;" action='/server_clear'>
+            <input class="btn btn-sm" type="submit" value="Clear"/>
+        </form>
+    </div>
+{% endblock %}

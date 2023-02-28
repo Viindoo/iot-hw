@@ -1,0 +1,68 @@
+{% extends "layout.html" %}
+{% from "loading.html" import loading_block_ui %}
+{% block head %}
+    <script>
+        $(document).ready(function () {
+            $('#server-config').submit(function(e){
+                e.preventDefault();
+                $('.loading-block').removeClass('o_hide');
+                $.ajax({
+                    url: '/server_connect',
+                    type: 'post',
+                    data: $('#server-config').serialize(),
+                    success : function(resp) {
+                        var data = JSON.parse(resp)
+                        console.log(data)
+                        if ( data.code_id == 200 ) {
+                            window.location.href = data.url_login + '?url=' + data.url_server
+                        }else {
+                            alert(data.error_message)
+                            $('.loading-block').addClass('o_hide');
+                        }
+                    }
+                }).fail(function () {
+                    $('.message-status').html('Configure Domain Server Error <br> Redirect to IoT Box');
+                    rebootTime = 6000
+                    setTimeout(function () {
+                            location.reload(true);
+                    }, rebootTime );
+                });
+            });
+        });
+    </script>
+{% endblock %}
+{% block content %}
+    <h2 class="text-center">Configure Odoo Server</h2>
+    <p>
+        Paste enter the server address information in the URL Server field.
+    </p>
+    <form id="server-config" action='/server_connect' method='POST'>
+        <style>
+            input[value='Cancel']{
+                margin-left: 15px;
+                width:50px ;
+                text-align: center;
+            }
+        </style>
+        <table align="center">
+            <tr>
+                <td>URL Server</td>
+                <td><input type="text" name="url"></td>
+            </tr>
+            <tr>
+                <td></td>
+                <td><input class="btn" type="submit" value="Connect"/>  <input class="btn" value="Cancel" onclick="window.location.href='./'"/> </td>
+            </tr>
+        </table>
+        <p class="text-center font-small">
+            Your current server <strong>{{ server_status }}</strong>
+        </p>
+        {{ loading_block_ui(loading_message) }}
+    </form>
+    <div class="text-center font-small" style="margin: 10px auto;">
+        You can clear the server configuration
+        <form style="display: inline-block;margin-left: 4px;" action='/server_clear'>
+            <input class="btn btn-sm" type="submit" value="Clear"/>
+        </form>
+    </div>
+{% endblock %}
