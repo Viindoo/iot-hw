@@ -1,0 +1,78 @@
+{% extends "layout.html" %}
+{% from "loading.html" import loading_block_ui %}
+{% block head %}
+    <script>
+        $(document).ready(function () {
+            $('#server-config').submit(function(e){
+                e.preventDefault();
+                $('.loading-block').removeClass('o_hide');
+                $.ajax({
+                    url: '/server_connect',
+                    type: 'post',
+                    data: $('#server-config').serialize(),
+                    success : function(resp) {
+                        var data = JSON.parse(resp)
+                        if ( data.code_id == 200 ) {
+                            if (typeof data.error_message !== 'undefined'){
+                                alert(data.error_message)
+                                location.reload(true);
+                            }
+                            else { 
+                                window.location.href = './point_of_sale/viin_display' }
+                        }else {
+                            alert(data.error_message)
+                            location.reload(true);
+                        }
+                    }
+                }).fail(function () {
+                    $('.message-status').html('Configure Domain Server Error <br> Redirect to Configure Viindoo Server');
+                    rebootTime = 6000
+                    setTimeout(function () {
+                        alert('Configure Domain Server Error \n\rRedirect to Configure Viindoo Server')
+                        location.reload(true);
+                    }, rebootTime );
+                });
+            });
+        });
+    </script>
+{% endblock %}
+{% block content %}
+    <h2 class="text-center">Configure Viindoo Server</h2>
+    <form id="server-config" action='/server_connect' method='POST'>
+        <style>
+            input[value='Cancel']{
+                margin-left: 15px;
+                width:50px ;
+                text-align: center;
+            }
+        </style>
+        <table align="center">
+            <tr>
+                <td>URL Server</td>
+                <td><input type="text" name="url"></td>
+            </tr>
+            <tr>
+                <td>User Name</td>
+                <td><input type="text" name="user_name"></td>
+            </tr>
+            <tr>
+                <td>Password</td>
+                <td><input type="password" name="password"></td>
+            </tr>
+            <tr>
+                <td></td>
+                <td><input class="btn" type="submit" value="Connect"/>  <input class="btn" value="Cancel" onclick="window.location.href='./'"/> </td>
+            </tr>
+        </table>
+        <p class="text-center font-small">
+            Your current server <strong>{{ server_status }}</strong>
+        </p>
+        {{ loading_block_ui(loading_message) }}
+    </form>
+    <div class="text-center font-small" style="margin: 10px auto;">
+        You can clear the server configuration
+        <form style="display: inline-block;margin-left: 4px;" action='/server_clear'>
+            <input class="btn btn-sm" type="submit" value="Clear"/>
+        </form>
+    </div>
+{% endblock %}
