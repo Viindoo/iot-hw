@@ -13,11 +13,10 @@ from odoo import http
 from odoo.modules.module import get_resource_path
 from odoo.addons.hw_drivers.main import manager
 from odoo.addons.hw_drivers.tools import helpers
+from odoo.addons.viin_hw_drivers.tools import viin_helpers
 from odoo.addons.hw_posbox_homepage.controllers.main import IoTboxHomepage
 
-
 _logger = logging.getLogger(__name__)
-
 
 if hasattr(sys, 'frozen'):
     # When running on compiled windows binary, we don't have access to package loader.
@@ -61,7 +60,9 @@ class ViinIoTboxHomepage(IoTboxHomepage):
     @http.route('/list_handlers', type='http', auth='none', website=True)
     def list_handlers(self):
         drivers_list = helpers.list_file_by_os(get_resource_path('hw_drivers', 'iot_handlers', 'drivers'))
+        drivers_list.extend(helpers.list_file_by_os(get_resource_path('viin_hw_drivers', 'iot_handlers', 'drivers')))
         interfaces_list = helpers.list_file_by_os(get_resource_path('hw_drivers', 'iot_handlers', 'interfaces'))
+        interfaces_list.extend(helpers.list_file_by_os(get_resource_path('viin_hw_drivers', 'iot_handlers', 'interfaces')))
         return handler_list_template.render({
             'title': "Viindoo's IoT Box - Handlers list",
             'breadcrumb': 'Handlers list',
@@ -72,10 +73,11 @@ class ViinIoTboxHomepage(IoTboxHomepage):
 
     @http.route('/load_iot_handlers', type='http', auth='none', website=True)
     def load_iot_handlers(self):
+        viin_helpers.load_iot_handlers()
         helpers.load_iot_handlers()
         helpers.odoo_restart(0)
         return "<meta http-equiv='refresh' content='20; url=http://" + helpers.get_ip() + ":8069/list_handlers'>"
-    
+
     @http.route('/wifi', type='http', auth='none', website=True)
     def wifi(self):
         return wifi_config_template.render({
