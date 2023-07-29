@@ -4,16 +4,10 @@ from odoo.addons.hw_drivers.iot_handlers.drivers import SerialScaleDriver
 
 global SerialScaleDriver
 
-def _FnOrgrin_stop_reading_action(self, data):
-    """Stops asking for the scale value."""
-    self._is_reading = False
-    self.data['value'] = 0
+_init = SerialScaleDriver.AdamEquipmentDriver.__init__
+stop_reading = SerialScaleDriver.ScaleDriver._stop_reading_action
 
-SerialScaleDriver.ScaleDriver._stop_reading_action = _FnOrgrin_stop_reading_action
-
-class SerialEquipmentDriver(SerialScaleDriver.AdamEquipmentDriver, SerialScaleDriver.ScaleDriver):
-    """Driver for serial scale."""
-    _protocol = SerialScaleDriver.ScaleProtocol(
+ViindooQuipmentProtocol = SerialScaleDriver.ScaleProtocol(
         name='Scales',
         baudrate=9600,
         bytesize=serial.EIGHTBITS,
@@ -33,10 +27,16 @@ class SerialEquipmentDriver(SerialScaleDriver.AdamEquipmentDriver, SerialScaleDr
         clearCommand=None,  # No clear command -> Tare again
         emptyAnswerValid=True,  # AZExtra does not answer unless a new non-zero weight has been detected
         autoResetWeight=True,  # AZExtra will not return 0 after removing products
-        )
+)
 
-    def __init__(self, identifier, device):
-        super(SerialEquipmentDriver, self).__init__(identifier, device)
-        self._is_reading = False
-        self._last_weight_time = 0
-        self.device_manufacturer = 'Serial'
+def FnOrg_init(self, identifier, device):
+    _init(self, identifier, device)
+    self.device_manufacturer = 'Serial'
+
+def FnOrg_stop_reading_action(self, data):
+    stop_reading(self, data)
+    self.data['value'] = 0
+
+SerialScaleDriver.AdamEquipmentDriver._protocol = ViindooQuipmentProtocol
+SerialScaleDriver.AdamEquipmentDriver.__init__ = FnOrg_init
+SerialScaleDriver.ScaleDriver._stop_reading_action = FnOrg_stop_reading_action
