@@ -1,0 +1,95 @@
+{% extends "layout.html" %}
+{% from "loading.html" import loading_block_ui %}
+{% block head %}
+    <script>
+        $(document).ready(function () {
+            $('#remote-method-config').submit(function(e){
+                e.preventDefault();
+                    var method = $('#remote-method-config select[name="method"]').val();
+                    var authtoken = $('#remote-method-config select[name="authtoken"]').val();
+                    if ( method == 'Ngrok' && authtoken === '') {
+                        alert("Authtoken field must not be emmty");
+                        return false;
+                    }
+                $('.loading-block').removeClass('o_hide');
+                $.ajax({
+                    url: '/remote_method_config',
+                    type: 'post',
+                    data: $('#remote-method-config').serialize(),
+                }).done(function (message) {
+                    var data = JSON.parse(message);
+                    var message = data.message;
+                    if (data.server) {
+                        setTimeout(function () {
+                            window.location = data.server;
+                        }, 10000);
+                    }
+                    if (data.error_code) {
+                        error = data.description + "\n" + data.error_code
+                        alert(error)
+                        location.reload(true);
+                    }
+                    $('.message-status').html(message);
+                }).fail(function () {
+                    $('.error-message').text('Error configuring remote method');
+                    $('.loading-block').addClass('o_hide');
+                });
+            });
+
+            $('select[name="method"]').change(function() {
+                var select_method = $(this).val();
+                if(select_method == "DNS Viindoo") {
+                    $('input[name="authtoken"]').closest('tr').hide();
+                    $('input[name="domain"]').closest('tr').hide();
+                } else {
+                    $('input[name="authtoken"]').closest('tr').show();
+                    $('input[name="domain"]').closest('tr').show();
+                }
+            });
+        });
+    </script>
+{% endblock %}
+{% block content %}
+    <h2 class="text-center">Configure Remote Method</h2>
+    <p>
+        Here you can configure how the IoT box is public to the internet.
+        Currently, we support using Ngrok and Viindoo DNS server
+    </p>
+    <form id="remote-method-config" action='/remote_method_config' method='POST'>
+        <table align="center">
+            <tr>
+                <td>Methods</td>
+                <td>
+                    <select name="method">
+                        {% for id in method -%}
+                            <option value="{{ id }}">{{ id }}</option>
+                        {%- endfor %}
+                    </select>
+                </td>
+            </tr>
+            <tr>
+                <td>Authtoken</td>
+                <td>
+                    <input type="text" name="authtoken" placeholder="Enter your Authtoken"/>
+                </td>
+            </tr>
+            <tr>
+                <td>Domain</td>
+                <td>
+                    <input type="text" name="domain" style="font-size: 1rem;" placeholder="yourdomain.ngrok.com"/>
+                </td>
+            </tr>
+            <tr>
+                <td/>
+                <td><input class="btn" type="submit" value="Confirm"/></td>
+            </tr>
+        </table>
+    </form>
+    <div class="text-center font-small" style="margin: 10px auto;">
+        You can set it to default
+        <form style="display: inline-block;margin-left: 4px;" action='/remote_method_default'>
+            <input class="btn btn-sm" type="submit" value="Set Default"/>
+        </form>
+    </div>
+    {{ loading_block_ui(loading_message) }}
+{% endblock %}

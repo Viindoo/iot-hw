@@ -9,6 +9,7 @@ import re
 import urllib3
 import jinja2
 from pathlib import Path
+import ngrok
 
 from odoo import http
 from odoo.modules.module import get_resource_path
@@ -34,10 +35,22 @@ server_config_template = jinja_env.get_template('server_config.html')
 change_hostname_template = jinja_env.get_template('change_hostname.html')
 handler_list_template = jinja_env.get_template('handler_list.html')
 wifi_config_template = jinja_env.get_template('wifi_config.html')
+remote_method_template = jinja_env.get_template('remote_method.html')
+remote_connect_template = jinja_env.get_template('remote_connect.html')
 timeout = 1000
 
 
 class ViinIoTboxHomepage(IoTboxHomepage):
+
+    def get_homepage_data(self):
+        res = super(ViinIoTboxHomepage, self).get_homepage_data()
+        method = helpers.read_file_first_line('remote-method.conf')
+        iot_server = helpers.read_file_first_line('odoo-subject.conf')
+        res.update({
+            'remote_method': str(method) or 'dns_viindoo',
+            'iot_server': iot_server or None
+        })
+        return res
 
     @http.route('/', type='http', auth='none')
     def index(self):
@@ -243,3 +256,106 @@ class ViinIoTboxHomepage(IoTboxHomepage):
             'server_status': helpers.get_odoo_server_url() or 'Not configured yet',
             'loading_message': 'Configure Hostname'
             })
+
+    @http.route('/remote_method', type='http', auth='none', website=True)
+    def remote_method(self):
+        return remote_method_template.render({
+            'title': 'Configuration remote method',
+            'breadcrumb': 'Configuration Remote Method',
+            'loading_message': 'Configuring your remote method',
+            'method': ["Ngrok", "DNS Viindoo"],
+        })
+
+    @http.route('/remote_method_config', type='http', auth='none', cors='*', csrf=False)
+    def remote_method_config(self, method, authtoken=None, domain=None):
+        res_payload = dict()
+        if method == "Ngrok":
+            helpers.write_file('remote-method.conf', "ngrok")
+            helpers.write_file('authtoken.ngrok', str(authtoken))
+            url = viin_helpers.ngrok_connect(authtoken, domain)
+            if url.get("url", None):
+                helpers.write_file('odoo-subject.conf', str(url.get("url", None)))
+                manager.send_alldevices()
+                res_payload = {
+                    'message': 'Connecting to ' + url.get("url", None),
+                    'server' : url.get("url", None),
+                }
+            else:
+                helpers.unlink_file('odoo-subject.conf')
+                error = dict(enumerate(url.get("error", None),0))
+                res_payload = {
+                    'message': error.get(0, 'Error installing Ngrock'),
+                    'error_code': "Error Code: " + str(error.get(2, None)),
+                    'description': error.get(1, None)
+                }
+        elif method == "DNS Viindoo":
+            url = helpers.read_file_first_line('odoo-subject.conf')
+            if url:
+                ngrok.disconnect(url)
+            helpers.unlink_file('odoo-subject.conf')
+            helpers.write_file('remote-method.conf', "dns_viindoo")
+            """TODO:
+                    - goi lai ham helpers.load_certificate() de  lay chung chi
+            """
+            manager.send_alldevices()
+            res_payload = {
+                'message': 'Connecting to ' + 'http://' + helpers.get_ip() + ':8069',
+                'server': 'http://' + helpers.get_ip() + ':8069',
+            }
+        return json.dumps(res_payload)
+
+    @http.route('/remote_method_default', type='http', auth='none', cors='*', csrf=False)
+    def remote_method_default(self):
+        url = helpers.read_file_first_line('odoo-subject.conf')
+        if url:
+            ngrok.disconnect(url)
+        helpers.unlink_file('odoo-subject.conf')
+        helpers.write_file('remote-method.conf', "dns_viindoo")
+        """TODO:
+                - goi lai ham helpers.load_certificate() de  lay chung chi
+        """
+        manager.send_alldevices()
+        return "<meta http-equiv='refresh' content='0; url=http://" + helpers.get_ip() + ":8069'>"
+
+    @http.route('/enable_ngrok', type='http', auth='none', cors='*', csrf=False)
+    def enable_ngrok(self, auth_token, url_tcp=None):
+        ngrok.set_auth_token(auth_token)
+        listeners = ngrok.get_listeners()
+        for lis in listeners:
+            if lis.proto() == 'tcp':
+                res_payload = {
+                    'message': "running",
+                    'url_tcp': lis.url(),
+                }
+                return json.dumps(res_payload)
+        try:
+            listener = ngrok.forward(
+                addr="localhost:22",
+                authtoken_from_env=True,
+                proto="tcp",
+                remote_addr=url_tcp,
+                log='/tmp/ngrok.log',
+            )
+            res_payload = {
+                'message': "You can perform remote debugging using the following address",
+                'url_tcp': listener.url(),
+            }
+        except ValueError as e:
+            _logger.error('A error ngrok connect TCP : %s ' % e)
+            error = dict(enumerate(e.args,0))
+            res_payload = {
+                'message': error.get(0, 'Error installing Ngrok'),
+                'error_code': "Error Code: " + str(error.get(2, None)),
+                'description': error.get(1, None)
+            }
+        return json.dumps(res_payload)
+
+    @http.route('/remote_connect', type='http', auth='none', cors='*')
+    def remote_connect(self):
+        """
+        Ghi de lai boi vi thay doi view
+        """
+        return remote_connect_template.render({
+            'title': 'Remote debugging',
+            'breadcrumb': 'Remote Debugging',
+        })
