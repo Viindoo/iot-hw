@@ -212,8 +212,16 @@
                 {% endif %}
             </td>
         </tr>
+        {% if iot_server %}
+            <tr>
+                <td class="heading">IoT Server</td>
+                <td>
+                    <a href='{{ iot_server }}' target=_blank>{{ iot_server }}</a>
+                </td>
+            </tr>
+        {% endif %}
         <tr>
-            <td class="heading">IOT Device</td>
+            <td class="heading">IoT Device</td>
             <td>
                 <div class="collapse">
                     {% if iot_device_status|length == 0 %}
@@ -238,9 +246,11 @@
         </tr>
     </table>
     <div style="margin: 20px auto 10px auto;" class="text-center">
-        <a class="btn" href='/point_of_sale/viin_display'>POS Display</a>
+        <a class="btn" style="padding: 6px 10px;" href='/point_of_sale/viin_display'>POS Display</a>
+        <a class="btn" style="padding: 6px 10px;" href='/remote_method'>Public Methods</a>
         {% if system == "Linux" %}
-            <a target="_blank" class="btn" style="margin-left: 10px;" href="http://{{ ip }}:631">Printers server</a>
+            <a class="btn" style="padding: 6px 10px;" href='/remote_connect'>Remote Debug</a>
+            <a target="_blank" style="padding: 6px 10px;" class="btn" href="http://{{ ip }}:631">Printers server</a>
         {% endif %}
     </div>
     {{ loading_block_ui(loading_message) }}

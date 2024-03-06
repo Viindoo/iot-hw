@@ -14,7 +14,7 @@
                     var data = JSON.parse(message);
                     var message = data.message;
                     if (data.server) {
-                        message += '<br>'+ data.server.message;
+                        message += '<br>'+ 'Redirect to ' + data.server.url;
                         setTimeout(function () {
                             window.location = data.server.url;
                         }, 30000);
@@ -49,11 +49,15 @@
             </tr>
             <tr>
                 <td>Password</td>
-                <td><input type="password" name="password" placeholder="optional"/></td>
+                <td style="display: flex;">
+                    <input type="password" name="password" style="flex: 1;" placeholder="optional"/>
+                </td>
             </tr>
             <tr>
                 <td>Persistent</td>
-                <td><input type="checkbox" name="persistent"/></td>
+                <td>
+                    <input type="checkbox" name="persistent"/>
+                </td>
             </tr>
             <tr>
                 <td/>

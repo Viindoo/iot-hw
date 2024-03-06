@@ -8,9 +8,12 @@ import re
 
 import urllib3
 import jinja2
+import ngrok
 from pathlib import Path
+from lxml import html
 
 from odoo import http
+from odoo.http import request
 from odoo.modules.module import get_resource_path
 from odoo.addons.hw_drivers.main import manager
 from odoo.addons.hw_drivers.tools import helpers
@@ -34,10 +37,20 @@ server_config_template = jinja_env.get_template('server_config.html')
 change_hostname_template = jinja_env.get_template('change_hostname.html')
 handler_list_template = jinja_env.get_template('handler_list.html')
 wifi_config_template = jinja_env.get_template('wifi_config.html')
+remote_method_template = jinja_env.get_template('remote_method.html')
+remote_connect_template = jinja_env.get_template('remote_connect.html')
 timeout = 1000
 
 
 class ViinIoTboxHomepage(IoTboxHomepage):
+
+    def get_homepage_data(self):
+        res = super(ViinIoTboxHomepage, self).get_homepage_data()
+        iot_server = helpers.read_file_first_line('odoo-subject.conf')
+        res.update({
+            'iot_server': iot_server or None
+        })
+        return res
 
     @http.route('/', type='http', auth='none')
     def index(self):
@@ -106,10 +119,11 @@ class ViinIoTboxHomepage(IoTboxHomepage):
             })
 
     @http.route('/server_connect', type='http', methods=['POST'], auth='none', cors='*', csrf=False)
-    def connect_to_server(self, **kw):
-        url_server = kw.get('url', '')
-        username = kw.get('user_name', '')
-        password = kw.get('password', '')
+    def connect_to_server(self):
+        data = request.params
+        url_server = data.get('url', '')
+        username = data.get('user_name', '')
+        password = data.get('password', '')
         data_login = {
                     "jsonrpc": "2.0",
                     "params": {
@@ -192,7 +206,7 @@ class ViinIoTboxHomepage(IoTboxHomepage):
                 else:
                     data_return = {
                                 'code_id': 200,
-                                'error_message': "odoo exceptions AccessError"
+                                'error_message': "Access Error"
                     }
             else:
                 data_return = {
@@ -243,3 +257,114 @@ class ViinIoTboxHomepage(IoTboxHomepage):
             'server_status': helpers.get_odoo_server_url() or 'Not configured yet',
             'loading_message': 'Configure Hostname'
             })
+
+    @http.route('/remote_method', type='http', auth='none', website=True)
+    def remote_method(self):
+        return remote_method_template.render({
+            'title': 'Configuration remote method',
+            'breadcrumb': 'Configuration Remote Method',
+            'loading_message': 'Configuring your remote method',
+            'method': ["Your Domain", "DNS Viindoo"],
+        })
+
+    @http.route('/remote_method_config', type='http', auth='none', cors='*', csrf=False)
+    def remote_method_config(self):
+        data = request.params
+        method = data.get('method', None)
+        domain = data.get('domain', None)
+        private_key = data.get('private_key', None)
+        certificate = data.get('certificate', None)
+        res_payload = dict()
+        
+        if method == "Your Domain" and domain and private_key and certificate:
+            if viin_helpers.is_valid_ssl(certificate) and viin_helpers.is_valid_ssl(private_key):
+                helpers.write_file('odoo-subject.conf', domain)
+                private_key.stream.seek(0)
+                certificate.stream.seek(0)
+                key = private_key.read().decode()
+                cer = certificate.read().decode()
+                with helpers.writable():
+                    Path('/etc/ssl/certs/nginx-cert.crt').write_text(cer)
+                    Path('/root_bypass_ramdisks/etc/ssl/certs/nginx-cert.crt').write_text(cer)
+                    Path('/etc/ssl/private/nginx-cert.key').write_text(key)
+                    Path('/root_bypass_ramdisks/etc/ssl/private/nginx-cert.key').write_text(key)
+                manager.send_alldevices()
+                res_payload = {
+                    'message': 'Connecting to ' + domain,
+                    'server' : domain,
+                }
+            else:
+                res_payload = {
+                    'error' : "Unable to read certificate file",
+                }
+        elif method == "DNS Viindoo":
+            helpers.unlink_file('odoo-subject.conf')
+            """TODO:
+                    - Hàm helpers.load_certificate() để lấy chứng chỉ
+                    - Hiện tại hàm này vẫn chưa ghi đè vì vậy nó vẫn đang
+                        dẫn tới trang lấy chứng chỉ của odoo
+                    - Sẽ ghi đè hàm này khi DNS Viindoo có api để cấp chứng chỉ cho hộp IoT
+            """
+            helpers.load_certificate()
+            manager.send_alldevices()
+            res_payload = {
+                'message': 'Connecting to ' + 'http://' + helpers.get_ip() + ':8069',
+                'server': 'http://' + helpers.get_ip() + ':8069',
+            }
+        return json.dumps(res_payload)
+
+    @http.route('/remote_method_default', type='http', auth='none', cors='*', csrf=False)
+    def remote_method_default(self):
+        helpers.unlink_file('odoo-subject.conf')
+        """TODO:
+                - Hàm helpers.load_certificate() để lấy chứng chỉ
+                - Hiện tại hàm này vẫn chưa ghi đè vì vậy nó vẫn đang
+                    dẫn tới trang lấy chứng chỉ của odoo
+                - Sẽ ghi đè hàm này khi DNS Viindoo có api để cấp chứng chỉ cho hộp IoT
+        """
+        helpers.load_certificate()
+        manager.send_alldevices()
+        return "<meta http-equiv='refresh' content='0; url=http://" + helpers.get_ip() + ":8069'>"
+
+    @http.route('/enable_ngrok', type='http', auth='none', cors='*', csrf=False)
+    def enable_ngrok(self, auth_token, url_tcp=None):
+        ngrok.set_auth_token(auth_token)
+        listeners = ngrok.get_listeners()
+        for lis in listeners:
+            if lis.proto() == 'tcp':
+                res_payload = {
+                    'message': "running",
+                    'url_tcp': lis.url(),
+                }
+                return json.dumps(res_payload)
+        try:
+            listener = ngrok.forward(
+                addr="localhost:22",
+                authtoken_from_env=True,
+                proto="tcp",
+                remote_addr=url_tcp,
+                log='/tmp/ngrok.log',
+            )
+            res_payload = {
+                'message': "You can perform remote debugging using the following address",
+                'url_tcp': listener.url(),
+            }
+        except ValueError as e:
+            _logger.error('A error ngrok connect TCP : %s ' % e)
+            error = dict(enumerate(e.args,0))
+            res_payload = {
+                'message': error.get(0, 'Error installing Ngrok'),
+                'error_code': "Error Code: " + str(error.get(2, None)),
+                'description': error.get(1, None)
+            }
+        return json.dumps(res_payload)
+
+    @http.route('/remote_connect', type='http', auth='none', cors='*')
+    def remote_connect(self):
+        """
+        Changing the view overwrites odoo's
+        """
+        return remote_connect_template.render({
+            'title': 'Remote debugging',
+            'breadcrumb': 'Remote Debugging',
+        })

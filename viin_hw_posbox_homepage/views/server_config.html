@@ -5,11 +5,25 @@
         $(document).ready(function () {
             $('#server-config').submit(function(e){
                 e.preventDefault();
+                var file_data = new FormData();
+                var url = $('#server-config input[name="url"]').val();
+                var user_name = $('#server-config input[name="user_name"]').val();
+                var password = $('#server-config input[name="password"]').val();
+                
+                if (is_ip_address(url)) {
+                    file_data.append('url', url);
+                } else {
+                    file_data.append('url', "https://" + url);
+                }
+                file_data.append('user_name', user_name);
+                file_data.append('password', password);
                 $('.loading-block').removeClass('o_hide');
                 $.ajax({
                     url: '/server_connect',
                     type: 'post',
-                    data: $('#server-config').serialize(),
+                    data: file_data,
+                    processData: false,
+                    contentType: false,
                     success : function(resp) {
                         var data = JSON.parse(resp)
                         if ( data.code_id == 200 ) {
@@ -34,6 +48,11 @@
                 });
             });
         });
+        // check IP
+        function is_ip_address(input) {
+            const ipPattern = /^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{1,5}$/;
+            return ipPattern.test(input);
+        };
     </script>
 {% endblock %}
 {% block content %}
@@ -49,15 +68,15 @@
         <table align="center">
             <tr>
                 <td>URL Server</td>
-                <td><input type="text" name="url"></td>
+                <td><input type="text" name="url" required></td>
             </tr>
             <tr>
                 <td>User Name</td>
-                <td><input type="text" name="user_name"></td>
+                <td><input type="text" name="user_name" required></td>
             </tr>
             <tr>
                 <td>Password</td>
-                <td><input type="password" name="password"></td>
+                <td><input type="password" name="password" required></td>
             </tr>
             <tr>
                 <td></td>
