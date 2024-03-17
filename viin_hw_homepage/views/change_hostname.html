@@ -3,13 +3,13 @@
 {% block head %}
     <script>
         $(document).ready(function () {
-            $('#change-hostname').submit(function(e){
+            $('#hostname').submit(function(e){
                 e.preventDefault();
                 $('.loading-block').removeClass('o_hide');
                 $.ajax({
-                    url: '/change_hostname',
+                    url: '/hostname_config',
                     type: 'post',
-                    data: $('#change-hostname').serialize(),
+                    data: $('#hostname').serialize(),
                     success : function(resp) {
                         var data = JSON.parse(resp)
                         alert(data.error_message)
@@ -37,14 +37,7 @@
         If you change the IoT Box Name,
         your IoT Box will need a reboot.
     </p>
-    <form id="change-hostname" action='/change_hostname' method='POST'>
-        <style>
-            input[value='Cancel']{
-                margin-left: 15px;
-                width:50px ;
-                text-align: center;
-            }
-        </style>
+    <form id="hostname" action='/hostname_config' method='POST'>
         <table align="center">
             <tr>
                 <td>Host Name</td>
@@ -52,7 +45,9 @@
             </tr>
             <tr>
                 <td></td>
-                <td><input class="btn" type="submit" value="Change"/> <input class="btn" value="Cancel" onclick="window.location.href='./'"/> </td>
+                <td>
+                    <input class="btn" type="submit" value="Change"/>
+                    <input class="btn" type="submit" value="Cancel" onclick="window.location.href='./'"/> </td>
             </tr>
         </table>
 

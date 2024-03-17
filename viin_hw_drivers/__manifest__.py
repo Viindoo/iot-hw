@@ -1,6 +1,6 @@
 {
     'name': 'Viindoo IoT Hardware Drivers',
-    'category': 'Sales/Point of Sale',
+    'category': 'IoT',
     'sequence': 6,
     'website': 'https://viindoo.com',
     'summary': 'Connect the Web Client to Hardware Peripherals',
