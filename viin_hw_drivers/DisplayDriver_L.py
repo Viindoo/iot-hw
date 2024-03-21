@@ -4,6 +4,8 @@ from odoo import http
 from odoo.addons.hw_drivers.tools import helpers
 from odoo.addons.hw_drivers.iot_handlers.drivers import DisplayDriver_L
 
+global DisplayDriver_L
+
 update_url = DisplayDriver_L.DisplayDriver.update_url
 display = DisplayDriver_L.DisplayController.display
 
@@ -15,7 +17,7 @@ def FnOrg_update_url(self, url=None):
             else:
                 url = 'http://localhost:8069/wifi'
         else:
-            url = 'http://' + helpers.get_ip() + ':8069'
+            url = 'http://localhost:8069'
     update_url(self, url)
 
 @http.route(['/point_of_sale/display', '/point_of_sale/display/<string:display_identifier>'], type='http', auth='none')
