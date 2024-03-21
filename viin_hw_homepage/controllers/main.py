@@ -7,13 +7,11 @@ import re
 import urllib3
 import jinja2
 import ngrok
-from pathlib import Path
 from lxml import html
 
 from odoo import http
 from odoo.http import request
 from odoo.modules.module import get_resource_path, loaded
-from odoo.addons.hw_drivers.main import manager
 from odoo.addons.hw_drivers.tools import helpers
 from odoo.addons.viin_hw_drivers.tools import viin_helpers
 from odoo.addons.hw_posbox_homepage.controllers.main import IoTboxHomepage
@@ -29,8 +27,8 @@ jinja_env.filters["json"] = json.dumps
 server_config_template = jinja_env.get_template('viin_server_config.html')
 change_hostname_template = jinja_env.get_template('change_hostname.html')
 handler_list_template = jinja_env.get_template('handler_list.html')
-public_method_template = jinja_env.get_template('public_method.html')
 remote_connect_template = jinja_env.get_template('viin_remote_connect.html')
+wifi_config_template = jinja_env.get_template('wifi_config.html')
 timeout = 1000
 
 class IoTboxHomepage(IoTboxHomepage):
@@ -41,7 +39,7 @@ class IoTboxHomepage(IoTboxHomepage):
             if "help" in link.text_content().lower():
                 link.set('href', "https://viindoo.com/vi/ticket")
             elif "documentation" in link.text_content().lower():
-                link.set('href', "https://viindoo.com/vi/documentation")
+                link.set('href', "https://viindoo.com/documentation/16.0/applications/internet-of-thinks.html")
         return page
 
     @http.route('/', type='http', auth='none')
@@ -86,29 +84,17 @@ class IoTboxHomepage(IoTboxHomepage):
 
                 # Replace odoo's link with viindoo's link
                 if "HTTPS certificate" in pair.text_content():
-                    href = pair.xpath("./following-sibling::td/a[contains(@href, 'www.odoo.com')]")[0]
-                    href.set('href', 'https://viindoo.com/vi/ticket')
+                    if pair.xpath("./following-sibling::td/a[contains(@href, 'www.odoo.com')]"):
+                        href = pair.xpath("./following-sibling::td/a[contains(@href, 'www.odoo.com')]")[0]
+                        href.set('href', 'https://viindoo.com/vi/ticket')
 
             for btn in homepage_odoo.xpath("//button[contains(@class, 'btn')] | //a[@class='btn']"):
-                # # Remove the path to pos_display
-                # # This button will be added in the viin_hw_pos_driver module
-                # if btn.get('href') == '/point_of_sale/display':
-                #     btn.getparent().remove(btn)
-
                 # Since Viindoo does not use this authentication method, remove this button
                 if btn.get('href') == '/list_credential':
                     btn.getparent().remove(btn)
 
                 if btn.text_content() == "Restart Odoo service":
                     btn.text = "Restart IoT service"
-
-                # add button "Public Methods"
-                if btn.get('href') == '/remote_connect':
-                    public_method_str = """
-                        <a class="btn" style="margin-left: 10px;" href="/public_method">Public Methods</a>
-                    """
-                    public_method = html.fromstring(public_method_str)
-                    btn.addprevious(public_method)
 
             homepage_viidoo = html.tostring(homepage_odoo, pretty_print=True, method='html', encoding='unicode')
             return homepage_viidoo
@@ -153,7 +139,8 @@ class IoTboxHomepage(IoTboxHomepage):
             'breadcrumb': 'Handlers list',
             'drivers_list': drivers_list,
             'interfaces_list': interfaces_list,
-            'server': helpers.get_odoo_server_url(),
+            # Replace with helpers.get_odoo_server_url() when we support downloading drivers
+            'server': None,
             'is_log_to_server_activated': get_odoo_config_log_to_server_option(),
             'root_logger_log_level': self._get_logger_effective_level_str(logging.getLogger()),
             'odoo_current_log_level': self._get_logger_effective_level_str(logging.getLogger('odoo')),
@@ -167,17 +154,6 @@ class IoTboxHomepage(IoTboxHomepage):
         handler_list = self._replace_link(handler_list)
         return html.tostring(handler_list, pretty_print=True, method='html', encoding='unicode')
 
-    @http.route('/load_iot_handlers', type='http', auth='none', website=True)
-    def load_iot_handlers(self):
-        """
-        Reload the list of drivers and interfaces, including those supported by Viindoo.
-        """
-        global loaded
-        for module in loaded:
-            viin_helpers.load_iot_handlers(module)
-        helpers.odoo_restart(0)
-        return "<meta http-equiv='refresh' content='20; url=http://" + helpers.get_ip() + ":8069/list_handlers'>"
-
     @http.route('/wifi', type='http', auth='none', website=True)
     def wifi(self):
         """
@@ -187,12 +163,25 @@ class IoTboxHomepage(IoTboxHomepage):
         html_wifi = self._replace_link(html_wifi)
         return html.tostring(html_wifi, pretty_print=True, method='html', encoding='unicode')
 
+    @http.route('/wifi', type='http', auth='none', website=True)
+    def wifi(self):
+        wifi_str = wifi_config_template.render({
+            'title': 'Wifi configuration',
+            'breadcrumb': 'Configure Wifi',
+            'loading_message': 'Connecting to Wifi',
+            'ssid': viin_helpers.get_wifi_essid(),
+        })
+
+        html_wifi = html.fromstring(wifi_str)
+        html_wifi = self._replace_link(html_wifi)
+        return html.tostring(html_wifi, pretty_print=True, method='html', encoding='unicode')
+
     @http.route('/wifi_connect', type='http', auth='none', cors='*', csrf=False)
     def connect_to_wifi(self, essid, password, persistent=False):
         """
         Replace the Odoo links with Viindoo links.
         """
-        res = super(IoTboxHomepage, self).connect_to_wifi(essid, password, persistent=False)
+        res = super(IoTboxHomepage, self).connect_to_wifi(essid, password, persistent)
         res_dict = json.loads(res.data.decode())
         server = res_dict.get('server', None)
         if server and server.get('message', None).lower() == "redirect to odoo server":
@@ -264,8 +253,8 @@ class IoTboxHomepage(IoTboxHomepage):
                         if result:
                             token = json.loads(result).get('token', '')
                             if token:
-                                helpers.save_conf_server(url_server, token, False, False)
-                                manager.send_alldevices()
+                                helpers.save_conf_server("https://" + url_server, token, False, False)
+                                viin_helpers.sync_box_to_viindoo_saas(url_server, username, password)
                                 data_return = {'code_id': response.status }
                             else:
                                 data_return = {
@@ -346,70 +335,6 @@ class IoTboxHomepage(IoTboxHomepage):
         html_hostname = self._replace_link(html_hostname)
         return html.tostring(html_hostname, pretty_print=True, method='html', encoding='unicode')
 
-    @http.route('/public_method', type='http', auth='none', website=True)
-    def public_method(self):
-        return public_method_template.render({
-            'title': 'Configuration public method',
-            'breadcrumb': 'Configuration Public Method',
-            'loading_message': 'Configuring your Public method',
-            'method': ["Your Domain", "DNS Viindoo"],
-        })
-
-    @http.route('/public_method_config', type='http', auth='none', cors='*', csrf=False)
-    def public_method_config(self):
-        data = request.params
-        method = data.get('method', None)
-        domain = data.get('domain', None)
-        private_key = data.get('private_key', None)
-        certificate = data.get('certificate', None)
-        res_payload = dict()
-        
-        if method == "Your Domain" and domain and private_key and certificate:
-            if viin_helpers.is_valid_ssl(certificate) and viin_helpers.is_valid_ssl(private_key):
-                helpers.write_file('odoo-subject.conf', domain)
-                private_key.stream.seek(0)
-                certificate.stream.seek(0)
-                pri = private_key.read().decode()
-                cer = certificate.read().decode()
-                with helpers.writable():
-                    Path('/etc/ssl/certs/nginx-cert.crt').write_text(cer)
-                    Path('/root_bypass_ramdisks/etc/ssl/certs/nginx-cert.crt').write_text(cer)
-                    Path('/etc/ssl/private/nginx-cert.key').write_text(pri)
-                    Path('/root_bypass_ramdisks/etc/ssl/private/nginx-cert.key').write_text(pri)
-                manager.send_alldevices()
-                res_payload = {
-                    'message': 'Connecting to ' + domain,
-                    'server' : domain,
-                }
-            else:
-                res_payload = {
-                    'error' : "Unable to read certificate file",
-                }
-        elif method == "DNS Viindoo":
-            helpers.unlink_file('odoo-subject.conf')
-            """TODO:
-                    - ham helpers.load_certificate() de  lay chung chi
-                    - Hien tai van chua ghi de ham nay (van load den trang cua odoo)
-            """
-            helpers.load_certificate()
-            manager.send_alldevices()
-            res_payload = {
-                'message': 'Connecting to ' + 'http://' + helpers.get_ip() + ':8069',
-                'server': 'http://' + helpers.get_ip() + ':8069',
-            }
-        return json.dumps(res_payload)
-
-    @http.route('/public_method_default', type='http', auth='none', cors='*', csrf=False)
-    def public_method_default(self):
-        helpers.unlink_file('odoo-subject.conf')
-        """TODO:
-                - ham helpers.load_certificate() de  lay chung chi
-                - Hien tai van chua ghi de ham nay (van load den trang cua odoo)
-        """
-        helpers.load_certificate()
-        manager.send_alldevices()
-        return "<meta http-equiv='refresh' content='0; url=http://" + helpers.get_ip() + ":8069'>"
-
     @http.route('/enable_ngrok', type='http', auth='none', cors='*', csrf=False)
     def enable_ngrok(self, auth_token, url_tcp=None):
         ngrok.set_auth_token(auth_token)
@@ -446,7 +371,7 @@ class IoTboxHomepage(IoTboxHomepage):
     @http.route('/remote_connect', type='http', auth='none', cors='*')
     def remote_connect(self):
         """
-        Ghi de lai boi vi thay doi view
+        Overriding this function is because the view has changed compared to the original view
         """
         remote_connect_str = remote_connect_template.render({
             'title': 'Remote debugging',
