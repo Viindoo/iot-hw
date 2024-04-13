@@ -21,16 +21,10 @@
                     processData: false,
                     contentType: false,
                     success : function(resp) {
-                        var data = JSON.parse(resp)
-                        if ( data.code_id == 200 ) {
-                            if (typeof data.error_message !== 'undefined'){
-                                alert(data.error_message)
-                                location.reload(true);
-                            }
-                            else { 
-                                window.location.href = './' }
+                        if ( resp.code_id == 200 ) {
+                            window.location.href = './' 
                         }else {
-                            alert(data.error_message)
+                            alert(resp.error_message)
                             location.reload(true);
                         }
                     }

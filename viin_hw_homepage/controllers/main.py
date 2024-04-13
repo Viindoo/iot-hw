@@ -10,11 +10,12 @@ import ngrok
 from lxml import html
 
 from odoo import http
-from odoo.http import request
+from odoo.http import request, Response
 from odoo.modules.module import get_resource_path, loaded
 from odoo.addons.hw_drivers.tools import helpers
 from odoo.addons.viin_hw_drivers.tools import viin_helpers
 from odoo.addons.hw_posbox_homepage.controllers.main import IoTboxHomepage
+from odoo.addons.viin_hw_homepage.Session import sessions, authenticate
 from odoo.addons.hw_drivers.server_logger import get_odoo_config_log_to_server_option
 
 _logger = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ change_hostname_template = jinja_env.get_template('change_hostname.html')
 handler_list_template = jinja_env.get_template('handler_list.html')
 remote_connect_template = jinja_env.get_template('viin_remote_connect.html')
 wifi_config_template = jinja_env.get_template('wifi_config.html')
+login_template = jinja_env.get_template('viin_login.html')
 timeout = 1000
 
 class IoTboxHomepage(IoTboxHomepage):
@@ -42,7 +44,48 @@ class IoTboxHomepage(IoTboxHomepage):
                 link.set('href', "https://viindoo.com/documentation/16.0/applications/internet-of-thinks.html")
         return page
 
+    @http.route('/web/login', type='http', auth="none", csrf=False)
+    def web_login(self, redirect=None, **kw):
+        server = helpers.get_odoo_server_url()
+        if server and request.httprequest.method == 'POST':
+            username = request.params['user_name']
+            password = request.params['password']
+            server = helpers.get_odoo_server_url()
+            cookie = viin_helpers.login(username, password)
+            if cookie:
+                res = Response(response=str(True))
+                res.headers['Set-Cookie'] = cookie
+            else:
+                res = Response(response=str(False))
+            return res
+
+        if not server:
+            return "<meta http-equiv='refresh' content='0; url=http://" + helpers.get_ip() + ":8069/server'>"
+
+        sid = http.request.session.sid
+        if sid in sessions and sessions[sid]._check_session(sid):
+            return "<meta http-equiv='refresh' content='0; url=http://" + helpers.get_ip() + ":8069/'>"
+
+        html_login = login_template.render({
+            'title': 'IoT -> Viindoo',
+            'breadcrumb': 'IoT Login Viindoo',
+            'server_status': helpers.get_odoo_server_url() or 'Not configured yet',
+            'loading_message': 'IoT Login To Viindoo '
+        })
+        html_login = html.fromstring(html_login)
+        html_login = self._replace_link(html_login)
+        res = Response(response=html.tostring(html_login, pretty_print=True, method='html', encoding='unicode'))
+        return res
+    
+    @http.route('/web/logout', type='http', auth="none")
+    def web_logout(self):
+        sid = http.request.session.sid
+        if sid in sessions:
+            sessions.pop(sid)
+        return "<meta http-equiv='refresh' content='0; url=http://" + helpers.get_ip() + ":8069/web/login'>"
+
     @http.route('/', type='http', auth='none')
+    @authenticate
     def index(self):
         """Overide to change endpoint from  `http://ip_addr:8069/steps` to `http://ip_addr:8069/wifi`
         Because the "/steps" page is used for users to log in to the server with an Odoo Token and set up WiFi.
@@ -95,11 +138,15 @@ class IoTboxHomepage(IoTboxHomepage):
 
                 if btn.text_content() == "Restart Odoo service":
                     btn.text = "Restart IoT service"
+                    btn_logout_str = "<button class='btn btn-sm btn-sm-restart' onclick=\"window.location.href='./web/logout'\">Log Out IoT Box</button>"
+                    btn_logout = html.fromstring(btn_logout_str)
+                    btn.addprevious(btn_logout)
 
             homepage_viidoo = html.tostring(homepage_odoo, pretty_print=True, method='html', encoding='unicode')
             return homepage_viidoo
 
     @http.route('/server', type='http', auth='none', website=True)
+    @authenticate
     def server(self):
         """
         Navigate to Viindoo server login page.
@@ -115,7 +162,13 @@ class IoTboxHomepage(IoTboxHomepage):
         html_server = self._replace_link(html_server)
         return html.tostring(html_server, pretty_print=True, method='html', encoding='unicode')
 
+    @http.route('/server_clear', type='http', auth='none', cors='*', csrf=False)
+    @authenticate
+    def clear_server_configuration(self):
+        return super(IoTboxHomepage, self).clear_server_configuration()
+
     @http.route('/list_handlers', type='http', auth='none', website=True, csrf=False, save_session=False)
+    @authenticate
     def list_handlers(self, **post):
         """
         Add a list of drivers and interfaces that Viindoo supports.
@@ -154,7 +207,18 @@ class IoTboxHomepage(IoTboxHomepage):
         handler_list = self._replace_link(handler_list)
         return html.tostring(handler_list, pretty_print=True, method='html', encoding='unicode')
 
+    @http.route('/load_iot_handlers', type='http', auth='none', website=True)
+    @authenticate
+    def load_iot_handlers(self):
+        return super(IoTboxHomepage, self).load_iot_handlers()
+
+    @http.route('/handlers_clear', type='http', auth='none', cors='*', csrf=False)
+    @authenticate
+    def clear_handlers_list(self):
+        return super(IoTboxHomepage, self).clear_handlers_list()
+
     @http.route('/wifi', type='http', auth='none', website=True)
+    @authenticate
     def wifi(self):
         """
         Replace the Odoo links with Viindoo links.
@@ -164,6 +228,7 @@ class IoTboxHomepage(IoTboxHomepage):
         return html.tostring(html_wifi, pretty_print=True, method='html', encoding='unicode')
 
     @http.route('/wifi', type='http', auth='none', website=True)
+    @authenticate
     def wifi(self):
         wifi_str = wifi_config_template.render({
             'title': 'Wifi configuration',
@@ -176,7 +241,13 @@ class IoTboxHomepage(IoTboxHomepage):
         html_wifi = self._replace_link(html_wifi)
         return html.tostring(html_wifi, pretty_print=True, method='html', encoding='unicode')
 
+    @http.route('/wifi_clear', type='http', auth='none', cors='*', csrf=False)
+    @authenticate
+    def clear_wifi_configuration(self):
+        return super(IoTboxHomepage, self).clear_wifi_configuration()
+
     @http.route('/wifi_connect', type='http', auth='none', cors='*', csrf=False)
+    @authenticate
     def connect_to_wifi(self, essid, password, persistent=False):
         """
         Replace the Odoo links with Viindoo links.
@@ -189,100 +260,46 @@ class IoTboxHomepage(IoTboxHomepage):
         return json.dumps(res_dict)
 
     @http.route('/server_connect', type='http', methods=['POST'], auth='none', cors='*', csrf=False)
+    @authenticate
     def connect_to_server(self):
-        data = request.params
-        url_server = data.get('url', '')
-        username = data.get('user_name', '')
-        password = data.get('password', '')
-        data_login = {
-                    "jsonrpc": "2.0",
-                    "params": {
-                            "login": username,
-                            "password": password,
-                    }
+        url_server = request.params.get('url', '')
+        username = request.params.get('user_name', '')
+        password = request.params.get('password', '')
+        data_return = {
+            'code_id': 404,
+            'error_message': 'Incorrect information'
         }
         urllib3.disable_warnings()
         http = urllib3.PoolManager(cert_reqs='CERT_NONE', timeout=timeout)
         try:
-            response = http.request(
-                'POST',
-                url_server + "/iot/login",
-                body=json.dumps(data_login).encode('utf8'),
-                headers={
-                    'Content-type': 'application/json',
-                    'Accept': 'text/plain',
-                },
-            )
-            data = json.loads(response.data.decode('utf-8'))
-            result = data.get('result', '')
-            if result:
-                data_login['params']['db'] = result[0]
+            Cookie = viin_helpers.login(username, password, url_server)
+            if Cookie:
+                data = {
+                    'name': socket.gethostname(),
+                    'identifier': helpers.get_mac_address(),
+                    'ip': helpers.get_ip(),
+                    'token': helpers.get_token(),
+                    'version': helpers.get_version(),
+                }
                 response = http.request(
                     'POST',
-                    url_server + "/web/session/authenticate",
-                    body=json.dumps(data_login).encode('utf8'),
+                    url_server + "/iot/create_iotbox",
+                    body=json.dumps(data).encode('utf8'),
                     headers={
                         'Content-type': 'application/json',
                         'Accept': 'text/plain',
+                        'Cookie': Cookie,
                     },
                 )
-                data = json.loads(response.data.decode('utf-8'))
-                result = data.get('result', '')
-                error = data.get('error', '')
-                if result:
-                    Cookie = response.headers.get('Set-Cookie', None)
-                    data = {
-                        'name': socket.gethostname(),
-                        'identifier': helpers.get_mac_address(),
-                        'ip': helpers.get_ip(),
-                        'token': helpers.get_token(),
-                        'version': helpers.get_version(),
-                    }
-                    response = http.request(
-                        'POST',
-                        url_server + "/iot/create_iotbox",
-                        body=json.dumps(data).encode('utf8'),
-                        headers={
-                            'Content-type': 'application/json',
-                            'Accept': 'text/plain',
-                            'Cookie': Cookie,
-                        },
-                    )
-                    if response.status == 200:
-                        result = json.loads(response.data.decode('utf-8')).get('result', {})
-                        if result:
-                            token = json.loads(result).get('token', '')
-                            if token:
-                                helpers.save_conf_server("https://" + url_server, token, False, False)
-                                viin_helpers.sync_box_to_viindoo_saas(url_server, username, password)
-                                data_return = {'code_id': response.status }
-                            else:
-                                data_return = {
-                                            'code_id': response.status,
-                                            'error_message': json.loads(result).get('message', 'Incorrect information')
-                                }
-                        else:
-                            error = json.loads(response.data.decode('utf-8')).get('error', {})
-                            data = error.get('data', {})
-                            data_return = {
-                                        'code_id': error.get('code', 200),
-                                        'error_message': data.get('name', 'Incorrect information')
-                            }
-                    else:
-                        data_return = {
-                                    'code_id': error.get('code', '400'),
-                                    'error_message': error.get('message', 'Incorrect information')
-                        }
-                else:
-                    data_return = {
-                                'code_id': 200,
-                                'error_message': "Access Error"
-                    }
-            else:
-                data_return = {
-                            'code_id': 404,
-                            'error_message': "Incorrect information"
-                }
+                if response.status == 200:
+                    result = json.loads(response.data.decode('utf-8')).get('result', {})
+                    if result:
+                        token = json.loads(result).get('token', '')
+                        if token:
+                            helpers.save_conf_server("https://" + url_server, token, False, False)
+                            viin_helpers.sync_box_to_viindoo_saas(url_server, username, password)
+                            data_return = {'code_id': response.status }
+
         except urllib3.exceptions.HTTPError as e :
             _logger.error('A error encountered : %s ' % e)
             data_return = {
@@ -293,12 +310,19 @@ class IoTboxHomepage(IoTboxHomepage):
             _logger.error('A error encountered : %s ' % e)
             data_return = {
                         'code_id': 404,
-                        'error_message': e
+                        'error_message': str(e)
             }
         finally:
-            return json.dumps(data_return)
+            res = request.make_response(
+                json.dumps(data_return),
+                headers=[('Content-Type', 'application/json; charset=utf-8')],
+            )
+            if Cookie:
+                res.headers['Set-Cookie'] = Cookie
+            return res
 
     @http.route('/hostname_config', type='http', auth='none', cors='*', csrf=False)
+    @authenticate
     def hostname_config(self, iotname):
         """
         Requires hostname name to be standard
@@ -320,6 +344,7 @@ class IoTboxHomepage(IoTboxHomepage):
             return json.dumps(data_return)
 
     @http.route('/hostname', type='http', auth='none', website=True)
+    @authenticate
     def config_hostname(self):
         """
         Replace the Odoo links with Viindoo links.
@@ -336,6 +361,7 @@ class IoTboxHomepage(IoTboxHomepage):
         return html.tostring(html_hostname, pretty_print=True, method='html', encoding='unicode')
 
     @http.route('/enable_ngrok', type='http', auth='none', cors='*', csrf=False)
+    @authenticate
     def enable_ngrok(self, auth_token, url_tcp=None):
         ngrok.set_auth_token(auth_token)
         listeners = ngrok.get_listeners()
@@ -369,6 +395,7 @@ class IoTboxHomepage(IoTboxHomepage):
         return json.dumps(res_payload)
 
     @http.route('/remote_connect', type='http', auth='none', cors='*')
+    @authenticate
     def remote_connect(self):
         """
         Overriding this function is because the view has changed compared to the original view
@@ -380,6 +407,31 @@ class IoTboxHomepage(IoTboxHomepage):
         htm_remote_connect = html.fromstring(remote_connect_str)
         htm_remote_connect = self._replace_link(htm_remote_connect)
         return html.tostring(htm_remote_connect, pretty_print=True, method='html', encoding='unicode')
+
+    @http.route('/hw_posbox_homepage/password', type='json', auth='none', methods=['POST'])
+    @authenticate
+    def view_password(self):
+        return helpers.generate_password()
+
+    @http.route('/six_payment_terminal', type='http', auth='none', cors='*', csrf=False)
+    @authenticate
+    def six_payment_terminal(self):
+        """
+        Replace the Odoo links with Viindoo links.
+        """
+        html_six_payment_terminal = html.fromstring(super(IoTboxHomepage, self).six_payment_terminal().data.decode())
+        html_six_payment_terminal = self._replace_link(html_six_payment_terminal)
+        return html.tostring(html_six_payment_terminal, pretty_print=True, method='html', encoding='unicode')
+
+    @http.route('/six_payment_terminal_add', type='http', auth='none', cors='*', csrf=False)
+    @authenticate
+    def add_six_payment_terminal(self, terminal_id):
+        return super(IoTboxHomepage, self).add_six_payment_terminal(terminal_id)
+
+    @http.route('/six_payment_terminal_clear', type='http', auth='none', cors='*', csrf=False)
+    @authenticate
+    def clear_six_payment_terminal(self):
+        return super(IoTboxHomepage, self).clear_six_payment_terminal()
 
     def _get_iot_handler_logger(self, handler_name, handler_folder_name):
         # change text odoo to viindoo

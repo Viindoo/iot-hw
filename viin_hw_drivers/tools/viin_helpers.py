@@ -11,6 +11,7 @@ from odoo import _, http
 from odoo.tools.func import lazy_property
 from odoo.modules.module import get_resource_path
 from odoo.addons.hw_drivers.tools import helpers
+from odoo.addons.viin_hw_homepage.Session import Session
 
 _logger = logging.getLogger(__name__)
 
@@ -109,3 +110,70 @@ def download_iot_handlers(auto=True):
         Rewrite this function when you want to update the driver
     """
     return None
+
+def get_db(username, password, server=None):
+    if not server:
+        server = helpers.get_odoo_server_url()
+    if server:
+        data_login = {
+            "jsonrpc": "2.0",
+            "params": {
+                "login": username,
+                "password": password,
+            }
+        }
+        urllib3.disable_warnings()
+        http = urllib3.PoolManager(cert_reqs='CERT_NONE', timeout=10)
+        try:
+            response = http.request(
+                'POST',
+                server + "/iot/login",
+                body=json.dumps(data_login).encode('utf8'),
+                headers={
+                    'Content-type': 'application/json',
+                    'Accept': 'text/plain',
+                },
+            )
+            data = json.loads(response.data.decode('utf-8'))
+            result = data.get('result', '')
+            if result:
+                return result[0]
+        except Exception as e:
+            _logger.error('An error encountered : %s ', e)
+    return
+            
+def login(username, password, server=None):
+    if not server:
+        server = helpers.get_odoo_server_url()
+    if server:
+        data_login = {
+            "jsonrpc": "2.0",
+            "params": {
+                "login": username,
+                "password": password,
+            }
+        }
+        urllib3.disable_warnings()
+        http = urllib3.PoolManager(cert_reqs='CERT_NONE', timeout=10)
+        try:
+            db = get_db(username, password, server)
+            if db:
+                data_login['params']['db'] = db
+                response = http.request(
+                    'POST',
+                    server + "/web/session/authenticate",
+                    body=json.dumps(data_login).encode('utf8'),
+                    headers={
+                        'Content-type': 'application/json',
+                        'Accept': 'text/plain',
+                    },
+                )
+                data = json.loads(response.data.decode('utf-8'))
+                result = data.get('result', None)
+                cookie = response.headers.get('Set-Cookie', None)
+                if result and result.get('is_iot_manager', None) and cookie:
+                    Session(cookie)
+                    return cookie
+
+        except Exception as e:
+            _logger.error('An error encountered : %s ', e)
