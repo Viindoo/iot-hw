@@ -1,0 +1,73 @@
+{% extends "layout.html" %}
+{% from "loading.html" import loading_block_ui %}
+{% block head %}
+    <script>
+        $(document).ready(function () {
+            $('#login').submit(function(e){
+                e.preventDefault();
+                var user_name = $('#login input[name="user_name"]').val();
+                var password = $('#login input[name="password"]').val();
+
+                $('.loading-block').removeClass('o_hide');
+                $.ajax({
+                    url: '/web/login',
+                    type: 'post',
+                    dataType: 'html',
+                    data: {
+                        user_name: user_name,
+                        password: password,
+                    },
+                    success : function(resp) {
+                        if ( resp == 'True' ) {
+                            window.location.href = origin;
+                        }else {
+                            alert("Incorrect information")
+                            location.reload(true);
+                        }
+                    }
+                }).fail(function () {
+                    $('.message-status').html('Login information is incorrect <br> Redirect to Log In');
+                    rebootTime = 6000
+                    setTimeout(function () {
+                        alert('Login timed out \n\rRedirect to Log In')
+                        location.reload(true);
+                    }, rebootTime );
+                });
+            });
+        });
+    </script>
+{% endblock %}
+{% block content %}
+    <h2 class="text-center">Log In IoT Box</h2>
+    <p>
+        Email and password with administrator privileges or IoT box creator privileges can be used for logging in.
+    </p>
+    <form id="login" action='/web/login' method='POST'>
+        <table align="center">
+            <tr>
+                <td>Email</td>
+                <td><input type="text" name="user_name" placeholder="MyEmail@gmail.com" required></td>
+            </tr>
+            <tr>
+                <td>Password</td>
+                <td><input type="password" name="password" placeholder="My password" required></td>
+            </tr>
+            <tr>
+                <td></td>
+                <td style="display: flex; justify-content: center;">
+                    <input class="btn" style="width: 100%;" type="submit" value="Log In"/> 
+                </td>
+            </tr>
+        </table>
+        <p class="text-center font-small">
+            Your current server <strong>{{ server_status }}</strong>
+        </p>
+        {{ loading_block_ui(loading_message) }}
+    </form>
+    <div class="text-center font-small" style="margin: 10px auto;">
+        You can clear the server configuration
+        <form style="display: inline-block;margin-left: 4px;" action='/server_clear'>
+            <input class="btn btn-sm" type="submit" value="Clear"/>
+        </form>
+    </div>
+{% endblock %}
