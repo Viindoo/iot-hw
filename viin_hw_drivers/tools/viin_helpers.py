@@ -21,7 +21,7 @@ def load_iot_handlers(modules: list = ['hw_drivers', 'viin_hw_drivers']):
             path = get_resource_path(load_module, 'iot_handlers', directory)
             filesList = helpers.list_file_by_os(path)
             for file in filesList:
-                spec = util.spec_from_file_location(helpers.compute_iot_handlers_addon_name(directory, file), str(Path(path).joinpath(file)))
+                spec = util.spec_from_file_location(compute_iot_handlers_addon_name(load_module, directory, file), str(Path(path).joinpath(file)))
                 if spec:
                     module = util.module_from_spec(spec)
                     try:
@@ -30,6 +30,10 @@ def load_iot_handlers(modules: list = ['hw_drivers', 'viin_hw_drivers']):
                         _logger.error('Unable to load file: %s ', file)
                         _logger.error('An error encountered : %s ', e)
     lazy_property.reset_all(http.root)
+
+def compute_iot_handlers_addon_name(module, handler_kind, handler_file_name):
+    return "odoo.addons.{module}.iot_handlers.{handler_kind}.{handler_name}".\
+        format(module=module, handler_kind=handler_kind, handler_name=handler_file_name.removesuffix('.py'))
 
 def sync_box_to_viindoo_saas(url_server, username, password):
     data = {
@@ -177,3 +181,53 @@ def login(username, password, server=None):
 
         except Exception as e:
             _logger.error('An error encountered : %s ', e)
+
+def mDNS_listener():
+    def prepare_browse_mdns_data(data: list) -> list:
+        result_mdns = list()
+        try:
+            for r in data:
+                line = dict()
+                parts = r.rsplit(";")
+                line["interface"] = parts[1]
+                line["service_name"] = parts[3]
+                line["domain"] = parts[6]
+                line["ip"] = parts[7]
+                line["port"] = parts[8]
+                txt = parts[9].strip("\"").split(', ')
+                for pair in txt:
+                    k, v = pair.split('=')
+                    line[k] = v
+                result_mdns.append(line)
+        except IndexError as e:
+            _logger.error(f'Error preparing mDNS data: {e}')
+        finally:
+            return result_mdns
+
+    mdns_services = list()
+    command = "avahi-browse -trkp _viindoo-iot._tcp | grep -v '^+'"
+    process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = process.communicate()
+    if process.returncode != 0:
+        _logger.error(f"Error running command: {stderr.decode()}")
+        return mdns_services
+    else:
+        output = stdout.decode().strip()
+        lines = output.split('\n')
+        
+        eth0_results = [line for line in lines if ";eth0;" in line and ";IPv4;" in line]
+        wlan0_results = [line for line in lines if ";wlan0;" in line and ";IPv4;" in line]
+
+        if eth0_results:
+            mdns_services = prepare_browse_mdns_data(eth0_results)
+        elif wlan0_results:
+            mdns_services = prepare_browse_mdns_data(wlan0_results)
+        return mdns_services
+
+def read_name_box():
+    name = helpers.read_file_first_line('name_of_iot_box')
+    if not name:
+        mac = helpers.get_mac_address().split(':')
+        name = "Viindoo-IoT-{}".format(mac[-2] + mac[-1])
+        helpers.write_file('name_of_iot_box', name)
+    return name

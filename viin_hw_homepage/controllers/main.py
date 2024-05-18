@@ -16,7 +16,8 @@ from odoo.addons.hw_drivers.tools import helpers
 from odoo.addons.viin_hw_drivers.tools import viin_helpers
 from odoo.addons.hw_posbox_homepage.controllers.main import IoTboxHomepage
 from odoo.addons.viin_hw_homepage.Session import sessions, authenticate
-from odoo.addons.hw_drivers.server_logger import get_odoo_config_log_to_server_option
+from odoo.addons.viin_hw_homepage.mDNS_register import MDNSRegister
+from odoo.addons.hw_drivers.server_logger import get_odoo_config_log_to_server_option, close_server_log_sender_handler
 
 _logger = logging.getLogger(__name__)
 
@@ -26,23 +27,23 @@ jinja_env = jinja2.Environment(loader=loader, autoescape=True)
 jinja_env.filters["json"] = json.dumps
 
 server_config_template = jinja_env.get_template('viin_server_config.html')
-change_hostname_template = jinja_env.get_template('change_hostname.html')
+change_box_name_template = jinja_env.get_template('change_box_name.html')
 handler_list_template = jinja_env.get_template('handler_list.html')
 remote_connect_template = jinja_env.get_template('viin_remote_connect.html')
 wifi_config_template = jinja_env.get_template('wifi_config.html')
 login_template = jinja_env.get_template('viin_login.html')
 timeout = 1000
 
-class IoTboxHomepage(IoTboxHomepage):
+# Replace odoo's link with viindoo's link
+def replace_link(page):
+    for link in page.xpath('//div[@class="footer"]/a'):
+        if "help" in link.text_content().lower():
+            link.set('href', "https://viindoo.com/vi/ticket")
+        elif "documentation" in link.text_content().lower():
+            link.set('href', "https://viindoo.com/documentation/16.0/applications/internet-of-thinks.html")
+    return page
 
-    # Replace odoo's link with viindoo's link
-    def _replace_link(self, page):
-        for link in page.xpath('//div[@class="footer"]/a'):
-            if "help" in link.text_content().lower():
-                link.set('href', "https://viindoo.com/vi/ticket")
-            elif "documentation" in link.text_content().lower():
-                link.set('href', "https://viindoo.com/documentation/16.0/applications/internet-of-thinks.html")
-        return page
+class IoTboxHomepage(IoTboxHomepage):
 
     @http.route('/web/login', type='http', auth="none", csrf=False)
     def web_login(self, redirect=None, **kw):
@@ -73,7 +74,7 @@ class IoTboxHomepage(IoTboxHomepage):
             'loading_message': 'IoT Login To Viindoo '
         })
         html_login = html.fromstring(html_login)
-        html_login = self._replace_link(html_login)
+        html_login = replace_link(html_login)
         res = Response(response=html.tostring(html_login, pretty_print=True, method='html', encoding='unicode'))
         return res
     
@@ -105,7 +106,7 @@ class IoTboxHomepage(IoTboxHomepage):
                     title.text = "Viindoo -- IoT"
 
             # Replace odoo's link with viindoo's link
-            homepage_odoo = self._replace_link(homepage_odoo)
+            homepage_odoo = replace_link(homepage_odoo)
 
             for pair in homepage_odoo.xpath("//tr/td[@class='heading']"):
                 # Delete the div tag containing "Pairing Code" if any
@@ -120,10 +121,12 @@ class IoTboxHomepage(IoTboxHomepage):
                     btn = pair.xpath("./following-sibling::td/a[contains(@href, 'upgrade')]")[0]
                     btn.getparent().remove(btn)
 
-                # Change the old link to the hostname change link
+                # Change the old link to the /change_box_name change link
                 if "Name" in pair.text_content():
                     btn = pair.xpath("./following-sibling::td/a[contains(@href, 'server')]")[0]
-                    btn.set('href', '/hostname')
+                    btn.set('href', '/change_box_name')
+                    # Modify IoT box name
+                    pair.xpath("./following-sibling::td")[0].text = viin_helpers.read_name_box()
 
                 # Replace odoo's link with viindoo's link
                 if "HTTPS certificate" in pair.text_content():
@@ -159,13 +162,16 @@ class IoTboxHomepage(IoTboxHomepage):
             'loading_message': 'Configure Domain Server'
         })
         html_server = html.fromstring(html_server)
-        html_server = self._replace_link(html_server)
+        html_server = replace_link(html_server)
         return html.tostring(html_server, pretty_print=True, method='html', encoding='unicode')
 
     @http.route('/server_clear', type='http', auth='none', cors='*', csrf=False)
     @authenticate
     def clear_server_configuration(self):
-        return super(IoTboxHomepage, self).clear_server_configuration()
+        helpers.unlink_file('odoo-remote-server.conf')
+        close_server_log_sender_handler()
+        MDNSRegister.register_service()
+        return "<meta http-equiv='refresh' content='0; url=http://" + helpers.get_ip() + ":8069'>"
 
     @http.route('/list_handlers', type='http', auth='none', website=True, csrf=False, save_session=False)
     @authenticate
@@ -204,7 +210,7 @@ class IoTboxHomepage(IoTboxHomepage):
         })
         handler_list = html.fromstring(handler_list)
         # Replace odoo's link with viindoo's link
-        handler_list = self._replace_link(handler_list)
+        handler_list = replace_link(handler_list)
         return html.tostring(handler_list, pretty_print=True, method='html', encoding='unicode')
 
     @http.route('/load_iot_handlers', type='http', auth='none', website=True)
@@ -220,16 +226,6 @@ class IoTboxHomepage(IoTboxHomepage):
     @http.route('/wifi', type='http', auth='none', website=True)
     @authenticate
     def wifi(self):
-        """
-        Replace the Odoo links with Viindoo links.
-        """
-        html_wifi = html.fromstring(super(IoTboxHomepage, self).wifi().data.decode())
-        html_wifi = self._replace_link(html_wifi)
-        return html.tostring(html_wifi, pretty_print=True, method='html', encoding='unicode')
-
-    @http.route('/wifi', type='http', auth='none', website=True)
-    @authenticate
-    def wifi(self):
         wifi_str = wifi_config_template.render({
             'title': 'Wifi configuration',
             'breadcrumb': 'Configure Wifi',
@@ -238,7 +234,7 @@ class IoTboxHomepage(IoTboxHomepage):
         })
 
         html_wifi = html.fromstring(wifi_str)
-        html_wifi = self._replace_link(html_wifi)
+        html_wifi = replace_link(html_wifi)
         return html.tostring(html_wifi, pretty_print=True, method='html', encoding='unicode')
 
     @http.route('/wifi_clear', type='http', auth='none', cors='*', csrf=False)
@@ -298,6 +294,7 @@ class IoTboxHomepage(IoTboxHomepage):
                         if token:
                             helpers.save_conf_server("https://" + url_server, token, False, False)
                             viin_helpers.sync_box_to_viindoo_saas(url_server, username, password)
+                            MDNSRegister.register_service()
                             data_return = {'code_id': response.status }
 
         except urllib3.exceptions.HTTPError as e :
@@ -321,44 +318,30 @@ class IoTboxHomepage(IoTboxHomepage):
                 res.headers['Set-Cookie'] = Cookie
             return res
 
-    @http.route('/hostname_config', type='http', auth='none', cors='*', csrf=False)
+    @http.route('/change_boxname', type='http', auth='none', cors='*', csrf=False)
     @authenticate
-    def hostname_config(self, iotname):
-        """
-        Requires hostname name to be standard
-        """
-        old_hostname = subprocess.check_output('hostname').decode('utf-8').strip('\n')
-        if len(iotname) > 63:
-            data_return = {'error_message': 'Hostname is too long'}
-            return json.dumps(data_return)
-        elif iotname.startswith('-') or iotname.endswith('-'):
-            data_return = {'error_message': 'Do not use the "-" character at the beginning and end the hostname'}
-            return json.dumps(data_return)
-        elif iotname == old_hostname:
-            data_return = {'error_message': 'The new hostname is the same as the old hostname'}
-            return json.dumps(data_return)
-        elif re.match('^[a-zA-Z0-9-]+$', iotname): 
-            subprocess.check_call([get_resource_path('point_of_sale', 'tools/posbox/configuration/rename_iot.sh'), iotname])
-        else:
-            data_return = {'error_message': 'The hostname is not correct'}
-            return json.dumps(data_return)
+    def change_boxname(self, iotboxname):
+        helpers.write_file('name_of_iot_box', iotboxname)
+        MDNSRegister.register_service()
+        data_return = {'message': 'Change_OK'}
+        return json.dumps(data_return)
 
-    @http.route('/hostname', type='http', auth='none', website=True)
+    @http.route('/change_box_name', type='http', auth='none', website=True)
     @authenticate
-    def config_hostname(self):
+    def change_box_name(self):
         """
-        Replace the Odoo links with Viindoo links.
+        Change IoT box name
         """
-        html_hostname = change_hostname_template.render({
-            'title': 'IoT Change Hostname',
-            'breadcrumb': 'Configure IoT Box',
-            'hostname': subprocess.check_output('hostname').decode('utf-8').strip('\n'),
+        html_boxname = change_box_name_template.render({
+            'title': 'Change IoT Box name',
+            'breadcrumb': 'Change IoT Box name',
+            'boxname': viin_helpers.read_name_box(),
             'server_status': helpers.get_odoo_server_url() or 'Not configured yet',
-            'loading_message': 'Configure Hostname'
+            'loading_message': 'Change IoT Box name'
         })
-        html_hostname = html.fromstring(html_hostname)
-        html_hostname = self._replace_link(html_hostname)
-        return html.tostring(html_hostname, pretty_print=True, method='html', encoding='unicode')
+        html_boxname = html.fromstring(html_boxname)
+        html_boxname = replace_link(html_boxname)
+        return html.tostring(html_boxname, pretty_print=True, method='html', encoding='unicode')
 
     @http.route('/enable_ngrok', type='http', auth='none', cors='*', csrf=False)
     @authenticate
@@ -405,7 +388,7 @@ class IoTboxHomepage(IoTboxHomepage):
             'breadcrumb': 'Remote Debugging',
         })
         htm_remote_connect = html.fromstring(remote_connect_str)
-        htm_remote_connect = self._replace_link(htm_remote_connect)
+        htm_remote_connect = replace_link(htm_remote_connect)
         return html.tostring(htm_remote_connect, pretty_print=True, method='html', encoding='unicode')
 
     @http.route('/hw_posbox_homepage/password', type='json', auth='none', methods=['POST'])
@@ -420,7 +403,7 @@ class IoTboxHomepage(IoTboxHomepage):
         Replace the Odoo links with Viindoo links.
         """
         html_six_payment_terminal = html.fromstring(super(IoTboxHomepage, self).six_payment_terminal().data.decode())
-        html_six_payment_terminal = self._replace_link(html_six_payment_terminal)
+        html_six_payment_terminal = replace_link(html_six_payment_terminal)
         return html.tostring(html_six_payment_terminal, pretty_print=True, method='html', encoding='unicode')
 
     @http.route('/six_payment_terminal_add', type='http', auth='none', cors='*', csrf=False)

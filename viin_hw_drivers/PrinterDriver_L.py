@@ -78,5 +78,5 @@ try:
     PrinterDriver_L.PrinterDriver.print_raw = FnOrg_print_raw
     PrinterDriver_L.PrinterDriver.print_receipt = FnOrg_print_receipt
 
-except Exception:
-    _logger.error("couldn't load file driver PrinterDriver_L")
+except Exception as e:
+    _logger.error(f"couldn't load file driver PrinterDriver_L: {e}")

@@ -1,0 +1,51 @@
+<!-- scan_iot_box.html -->
+{% extends "layout.html" %}
+
+{% block head %}
+    <style>
+        body {
+            width: 800px;
+        }
+        th, td {
+            border: 1px solid #dddddd;
+            text-align: left;
+            padding: 8px;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        tr, th {
+            text-align: center;
+        }
+    </style>
+{% endblock %}
+
+{% block content %}
+    <h2 class="text-center">Scan IoT Box</h2>
+    <p>To scan the IP address of the IoT box, your computer must be connected to the same local area network (LAN) as the IoT box.</p>
+    <p>Please click on <strong>Open</strong> to connect to the IoT box.</p>
+    <form id="scan_iot_box">
+        <table align="center">
+            <thead>
+                <tr>
+                    <th>IoT Box</th>
+                    <th>Version</th>
+                    <th>Domain</th>
+                    <th>Server Viindoo</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in items %}
+                    <tr>
+                        <td>{{ item.name_iot }}</td>
+                        <td>{{ item.version }}</td>
+                        <td>{{ item.domain }}</td>
+                        <td>{{ item.server }}</td>
+                        <td><a href="http://{{ item.ip }}:8069" target="_blank">Open</a></td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </form>
+{% endblock %}

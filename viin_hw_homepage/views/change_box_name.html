@@ -1,0 +1,65 @@
+{% extends "layout.html" %}
+{% from "loading.html" import loading_block_ui %}
+{% block head %}
+    <script>
+        $(document).ready(function () {
+            $('#boxname').submit(function(e){
+                e.preventDefault();
+                $('.loading-block').removeClass('o_hide');
+                $.ajax({
+                    url: '/change_boxname',
+                    type: 'post',
+                    data: $('#boxname').serialize(),
+                    success : function(resp) {
+                        var data = JSON.parse(resp)
+                        if (data.message == "Change_OK") {
+                            window.location.href = origin
+                        }
+                    }    
+                
+                }).fail(function () {
+                    $('.message-status').html('Change IoT Box name Error <br> Redirect to IoT Box');
+                    if ($('#iotboxname')[0].defaultValue == $('#iotboxname')[0].value){
+                        var rebootTime = 30000;
+                    }else{
+                        var rebootTime = 100000;
+                    }
+                    setTimeout(function () {
+                            location.reload(true);
+                    }, rebootTime);
+                });
+            });
+        });
+    </script>
+{% endblock %}
+{% block content %}
+    <h2 class="text-center">Change IoT Box name</h2>
+    <p>
+        You can rename the IoT box to make it easier to remember.
+    </p>
+    <form id="boxname" action='/change_boxname' method='POST'>
+        <table align="center">
+            <tr>
+                <td>IoT Box Name</td>
+                <td><input type="text" id= "iotboxname" name="iotboxname" value="{{ boxname }}"></td>
+            </tr>
+            <tr>
+                <td></td>
+                <td>
+                    <input class="btn" type="submit" value="Change"/>
+                    <input class="btn" type="submit" value="Cancel" onclick="window.location.href='./'"/> </td>
+            </tr>
+        </table>
+
+        <p class="text-center font-small">
+            Your current server <strong>{{ server_status }}</strong>
+        </p>
+        {{ loading_block_ui(loading_message) }}
+    </form>
+    <div class="text-center font-small" style="margin: 10px auto;">
+        You can clear the server configuration
+        <form style="display: inline-block;margin-left: 4px;" action='/server_clear'>
+            <input class="btn btn-sm" type="submit" value="Clear"/>
+        </form>
+    </div>
+{% endblock %}
