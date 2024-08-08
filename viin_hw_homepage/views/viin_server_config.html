@@ -10,11 +10,7 @@
                 var user_name = $('#server-config input[name="user_name"]').val();
                 var password = $('#server-config input[name="password"]').val();
                 
-                if (is_ip_address(url)) {
-                    file_data.append('url', url);
-                } else {
-                    file_data.append('url', "https://" + url);
-                }
+                file_data.append('url', url);
                 file_data.append('user_name', user_name);
                 file_data.append('password', password);
                 $('.loading-block').removeClass('o_hide');
@@ -25,51 +21,83 @@
                     processData: false,
                     contentType: false,
                     success : function(resp) {
-                        var data = JSON.parse(resp)
-                        if ( data.code_id == 200 ) {
-                            if (typeof data.error_message !== 'undefined'){
-                                alert(data.error_message)
-                                location.reload(true);
-                            }
-                            else { 
-                                window.location.href = './' }
+                        if ( resp.code_id == 200 ) {
+                            restart_odoo_or_reboot('restart_odoo'); 
                         }else {
-                            alert(data.error_message)
+                            alert(resp.error_message);
                             location.reload(true);
-                        }
-                    }
+                        };
+                    },
                 }).fail(function () {
                     $('.message-status').html('Configure Domain Server Error <br> Redirect to Configure Viindoo Server');
                     rebootTime = 6000
                     setTimeout(function () {
-                        alert('Configure Domain Server Error \n\rRedirect to Configure Viindoo Server')
+                        alert('Configure Domain Server Error \n\rRedirect to Configure Viindoo Server');
                         location.reload(true);
                     }, rebootTime );
                 });
             });
         });
-        // check IP
-        function is_ip_address(input) {
-            const ipPattern = /^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{1,5}$/;
-            return ipPattern.test(input);
-        };
+
+        function restart_odoo_or_reboot(action) {
+            $('.message-title').text('Restarting');
+            $('.message-status').text('Please wait');
+            $.ajax({
+                url: '/iot_restart_odoo_or_reboot/',
+                type: 'post',
+                contentType: 'application/json',
+                data: JSON.stringify({ params: {action: action} }),
+                timeout: 15000,
+            }).done(function(data) {
+                if (data.result == 'success') {
+                    const interval = setInterval(function() {
+                        $.ajax({
+                            url:'/',
+                            timeout: 4000
+                        }).done(function() {
+                            window.location.href = './';
+                        }).fail(function(xhr, textStatus, thrownError) {
+                            if (xhr.status) {
+                                display_error_and_clear_interval(interval, xhr.status, thrownError);
+                            }
+                        })
+                    }, 4000)
+                    setTimeout(function(){
+                        display_error_and_clear_interval(interval, '0', 'timeout');
+                    }, 600000);
+                }
+                else {
+                    display_error_and_clear_interval(interval, 'Error', data.result);
+                }
+            }).fail(function(xhr, textStatus, thrownError) {
+                display_error_and_clear_interval(null, xhr.status, thrownError);
+            })
+        }
+
+        function display_error_and_clear_interval(interval, xhrStatus, thrownError) {
+            if (interval) {
+                clearInterval(interval);
+            }
+            $('.loading-block').addClass('o_hide');
+            $('.error-message').text(xhrStatus + ": " + thrownError);
+        }
     </script>
 {% endblock %}
 {% block content %}
-    <h2 class="text-center">Configure Viindoo Server</h2>
+    <h2 class="text-center">Connect The IoT Box To Your Server</h2>
     <form id="server-config" action='/server_connect' method='POST'>
         <table align="center">
             <tr>
-                <td>URL Server</td>
-                <td><input type="text" name="url" required></td>
+                <td>Domain</td>
+                <td><input type="text" name="url" placeholder="MyCompany.viindoo.com" required></td>
             </tr>
             <tr>
-                <td>User Name</td>
-                <td><input type="text" name="user_name" required></td>
+                <td>Email</td>
+                <td><input type="text" name="user_name" placeholder="MyEmail@gmail.com" required></td>
             </tr>
             <tr>
                 <td>Password</td>
-                <td><input type="password" name="password" required></td>
+                <td><input type="password" name="password" placeholder="My password" required></td>
             </tr>
             <tr>
                 <td></td>
