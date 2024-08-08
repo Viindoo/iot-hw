@@ -16,7 +16,7 @@ class NotifyScanBLT(DeviceManager):
         if identifier not in blt_devices.keys():
             with lock:
                 blt_devices[identifier] = device
-                print(device.alias())
+                # print(device.alias())   
 
 class BLEDeviceManager(threading.Thread):
     def run(self):

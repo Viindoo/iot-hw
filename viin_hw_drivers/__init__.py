@@ -32,3 +32,4 @@ from . import SerialScaleDriver
 from . import controllers
 from . import NetworkSwitch
 from . import SendDomain
+from . import send_status_iot

@@ -34,7 +34,7 @@ def FnOrg_display(self, display_identifier=None):
         if "background: linear-gradient(to right bottom, #77717e, #c9a8a9)" in style.text_content().lower():
             replace_style = style.text_content().replace(
                 "background: linear-gradient(to right bottom, #77717e, #c9a8a9)", 
-                "background: linear-gradient(to right bottom, #00bbce, #0097a7)"
+                'background-image: url("/viin_hw_homepage/static/img/background-light.svg");',
             )
             style.text = replace_style
 

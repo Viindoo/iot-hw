@@ -16,6 +16,11 @@ If you activate this module, you won't be able to access the
 regular Odoo interface anymore.
 
 """,
+    'assets': {
+        'web.assets_backend': [
+            'viin_hw_homepage/static/img/*',
+        ],
+    },
     'installable': False,
     'license': 'OPL-1',
 }

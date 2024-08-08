@@ -22,22 +22,65 @@
                     contentType: false,
                     success : function(resp) {
                         if ( resp.code_id == 200 ) {
-                            window.location.href = './' 
+                            restart_odoo_or_reboot('restart_odoo'); 
                         }else {
-                            alert(resp.error_message)
+                            alert(resp.error_message);
                             location.reload(true);
-                        }
-                    }
+                        };
+                    },
                 }).fail(function () {
                     $('.message-status').html('Configure Domain Server Error <br> Redirect to Configure Viindoo Server');
                     rebootTime = 6000
                     setTimeout(function () {
-                        alert('Configure Domain Server Error \n\rRedirect to Configure Viindoo Server')
+                        alert('Configure Domain Server Error \n\rRedirect to Configure Viindoo Server');
                         location.reload(true);
                     }, rebootTime );
                 });
             });
         });
+
+        function restart_odoo_or_reboot(action) {
+            $('.message-title').text('Restarting');
+            $('.message-status').text('Please wait');
+            $.ajax({
+                url: '/iot_restart_odoo_or_reboot/',
+                type: 'post',
+                contentType: 'application/json',
+                data: JSON.stringify({ params: {action: action} }),
+                timeout: 15000,
+            }).done(function(data) {
+                if (data.result == 'success') {
+                    const interval = setInterval(function() {
+                        $.ajax({
+                            url:'/',
+                            timeout: 4000
+                        }).done(function() {
+                            window.location.href = './';
+                        }).fail(function(xhr, textStatus, thrownError) {
+                            if (xhr.status) {
+                                display_error_and_clear_interval(interval, xhr.status, thrownError);
+                            }
+                        })
+                    }, 4000)
+                    setTimeout(function(){
+                        display_error_and_clear_interval(interval, '0', 'timeout');
+                    }, 600000);
+                }
+                else {
+                    display_error_and_clear_interval(interval, 'Error', data.result);
+                }
+            }).fail(function(xhr, textStatus, thrownError) {
+                display_error_and_clear_interval(null, xhr.status, thrownError);
+            })
+        }
+
+        function display_error_and_clear_interval(interval, xhrStatus, thrownError) {
+            if (interval) {
+                clearInterval(interval);
+            }
+            $('.loading-block').addClass('o_hide');
+            $('.error-message').text(xhrStatus + ": " + thrownError);
+        }
     </script>
 {% endblock %}
 {% block content %}

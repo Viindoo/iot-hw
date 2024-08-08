@@ -2,7 +2,6 @@ import json
 import logging
 import socket
 import subprocess
-import re
 
 import urllib3
 import jinja2
@@ -11,7 +10,7 @@ from lxml import html
 
 from odoo import http
 from odoo.http import request, Response
-from odoo.modules.module import get_resource_path, loaded
+from odoo.tools.misc import file_path
 from odoo.addons.hw_drivers.tools import helpers
 from odoo.addons.viin_hw_drivers.tools import viin_helpers
 from odoo.addons.hw_posbox_homepage.controllers.main import IoTboxHomepage
@@ -34,13 +33,29 @@ wifi_config_template = jinja_env.get_template('wifi_config.html')
 login_template = jinja_env.get_template('viin_login.html')
 timeout = 1000
 
-# Replace odoo's link with viindoo's link
-def replace_link(page):
+# Replace odoo's link with viindoo's link and branding
+def replace_link_and_branding(page):
     for link in page.xpath('//div[@class="footer"]/a'):
         if "help" in link.text_content().lower():
             link.set('href', "https://viindoo.com/vi/ticket")
         elif "documentation" in link.text_content().lower():
             link.set('href', "https://viindoo.com/documentation/16.0/applications/internet-of-thinks.html")
+        link.set('style', 'color: #ffffff;')
+    
+    for link in page.xpath('//div[@class="breadcrumb"]/a'):
+        link.set('style', 'color: #ffffff;')
+
+    for span in page.xpath('//div[@class="breadcrumb"]/span'):
+        span.set('style', 'color: #ffffff;')
+    
+    for style_element in page.xpath("//style"):
+        css_text = style_element.text
+        css_text = css_text.replace(
+            'background-image: url("/hw_posbox_homepage/static/img/background-light.svg");',
+            'background-image: url("/viin_hw_homepage/static/img/background-light.svg");',
+            )
+        style_element.text = css_text
+
     return page
 
 class IoTboxHomepage(IoTboxHomepage):
@@ -74,7 +89,7 @@ class IoTboxHomepage(IoTboxHomepage):
             'loading_message': 'IoT Login To Viindoo '
         })
         html_login = html.fromstring(html_login)
-        html_login = replace_link(html_login)
+        html_login = replace_link_and_branding(html_login)
         res = Response(response=html.tostring(html_login, pretty_print=True, method='html', encoding='unicode'))
         return res
     
@@ -106,7 +121,7 @@ class IoTboxHomepage(IoTboxHomepage):
                     title.text = "Viindoo -- IoT"
 
             # Replace odoo's link with viindoo's link
-            homepage_odoo = replace_link(homepage_odoo)
+            homepage_odoo = replace_link_and_branding(homepage_odoo)
 
             for pair in homepage_odoo.xpath("//tr/td[@class='heading']"):
                 # Delete the div tag containing "Pairing Code" if any
@@ -162,7 +177,7 @@ class IoTboxHomepage(IoTboxHomepage):
             'loading_message': 'Configure Domain Server'
         })
         html_server = html.fromstring(html_server)
-        html_server = replace_link(html_server)
+        html_server = replace_link_and_branding(html_server)
         return html.tostring(html_server, pretty_print=True, method='html', encoding='unicode')
 
     @http.route('/server_clear', type='http', auth='none', cors='*', csrf=False)
@@ -180,14 +195,13 @@ class IoTboxHomepage(IoTboxHomepage):
         Add a list of drivers and interfaces that Viindoo supports.
         """
         super(IoTboxHomepage, self).list_handlers(**post)
-        global loaded
         AVAILABLE_LOG_LEVELS = ('debug', 'info', 'warning', 'error')
         drivers_list = list()
         interfaces_list = list()
-
-        for module in loaded:
-            fld_driver = get_resource_path(module, 'iot_handlers', 'drivers')
-            fld_interface = get_resource_path(module, 'iot_handlers', 'interfaces')
+        modules = ['hw_drivers', 'viin_hw_drivers']
+        for module in modules:
+            fld_driver = file_path(f"{module}/iot_handlers/drivers")
+            fld_interface = file_path(f"{module}/iot_handlers/interfaces")
             if fld_driver:
                 drivers_list.extend(helpers.list_file_by_os(fld_driver))
             if fld_interface:
@@ -210,7 +224,7 @@ class IoTboxHomepage(IoTboxHomepage):
         })
         handler_list = html.fromstring(handler_list)
         # Replace odoo's link with viindoo's link
-        handler_list = replace_link(handler_list)
+        handler_list = replace_link_and_branding(handler_list)
         return html.tostring(handler_list, pretty_print=True, method='html', encoding='unicode')
 
     @http.route('/load_iot_handlers', type='http', auth='none', website=True)
@@ -234,7 +248,7 @@ class IoTboxHomepage(IoTboxHomepage):
         })
 
         html_wifi = html.fromstring(wifi_str)
-        html_wifi = replace_link(html_wifi)
+        html_wifi = replace_link_and_branding(html_wifi)
         return html.tostring(html_wifi, pretty_print=True, method='html', encoding='unicode')
 
     @http.route('/wifi_clear', type='http', auth='none', cors='*', csrf=False)
@@ -340,7 +354,7 @@ class IoTboxHomepage(IoTboxHomepage):
             'loading_message': 'Change IoT Box name'
         })
         html_boxname = html.fromstring(html_boxname)
-        html_boxname = replace_link(html_boxname)
+        html_boxname = replace_link_and_branding(html_boxname)
         return html.tostring(html_boxname, pretty_print=True, method='html', encoding='unicode')
 
     @http.route('/enable_ngrok', type='http', auth='none', cors='*', csrf=False)
@@ -388,7 +402,7 @@ class IoTboxHomepage(IoTboxHomepage):
             'breadcrumb': 'Remote Debugging',
         })
         htm_remote_connect = html.fromstring(remote_connect_str)
-        htm_remote_connect = replace_link(htm_remote_connect)
+        htm_remote_connect = replace_link_and_branding(htm_remote_connect)
         return html.tostring(htm_remote_connect, pretty_print=True, method='html', encoding='unicode')
 
     @http.route('/hw_posbox_homepage/password', type='json', auth='none', methods=['POST'])
@@ -403,7 +417,7 @@ class IoTboxHomepage(IoTboxHomepage):
         Replace the Odoo links with Viindoo links.
         """
         html_six_payment_terminal = html.fromstring(super(IoTboxHomepage, self).six_payment_terminal().data.decode())
-        html_six_payment_terminal = replace_link(html_six_payment_terminal)
+        html_six_payment_terminal = replace_link_and_branding(html_six_payment_terminal)
         return html.tostring(html_six_payment_terminal, pretty_print=True, method='html', encoding='unicode')
 
     @http.route('/six_payment_terminal_add', type='http', auth='none', cors='*', csrf=False)
@@ -415,6 +429,11 @@ class IoTboxHomepage(IoTboxHomepage):
     @authenticate
     def clear_six_payment_terminal(self):
         return super(IoTboxHomepage, self).clear_six_payment_terminal()
+
+    @http.route('/iot_restart_odoo_or_reboot', type='json', auth='none', cors='*', csrf=False)
+    @authenticate
+    def iot_restart_odoo_or_reboot(self, action):
+        return super(IoTboxHomepage, self).iot_restart_odoo_or_reboot(action)
 
     def _get_iot_handler_logger(self, handler_name, handler_folder_name):
         # change text odoo to viindoo

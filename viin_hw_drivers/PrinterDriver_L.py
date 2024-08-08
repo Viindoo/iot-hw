@@ -5,11 +5,13 @@ from base64 import b64decode
 from PIL import Image, ImageOps
 
 from odoo.addons.hw_escpos.escpos.printer import Network
-from odoo.addons.hw_drivers.iot_handlers.interfaces.PrinterInterface_L import PPDs, conn, cups_lock
+from odoo.addons.hw_drivers.controllers.proxy import proxy_drivers
+from odoo.addons.hw_drivers.main import iot_devices
 
 _logger = logging.getLogger(__name__)
 
 try:
+    from odoo.addons.hw_drivers.iot_handlers.interfaces.PrinterInterface_L import PPDs, conn, cups_lock
     from odoo.addons.hw_drivers.iot_handlers.drivers import PrinterDriver_L
 
     global PrinterDriver_L
@@ -73,10 +75,18 @@ try:
         self.print_raw(commands['center'])
         self.print_raw(print_command)
 
+    @classmethod
+    def FnOrg_get_status(cls):
+        status = 'connected' if any(iot_devices[d].device_type == "printer" and iot_devices[d].device_connection in ['direct', 'network'] for d in iot_devices) else 'disconnected'
+        return {'status': status, 'messages': ''}
+    
     PrinterDriver_L.PrinterDriver.__init__ = FnOrg_init
     PrinterDriver_L.PrinterDriver.supported = FnOrg_supported
     PrinterDriver_L.PrinterDriver.print_raw = FnOrg_print_raw
     PrinterDriver_L.PrinterDriver.print_receipt = FnOrg_print_receipt
+    PrinterDriver_L.PrinterDriver.get_status = FnOrg_get_status
+
+    proxy_drivers['printer'] = PrinterDriver_L.PrinterDriver
 
 except Exception as e:
     _logger.error(f"couldn't load file driver PrinterDriver_L: {e}")
