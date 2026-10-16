@@ -1,0 +1,173 @@
+/* The look of the box page. Brand tokens are declared once, here; status colours stay Bootstrap's own. */
+:root {
+    --viin-primary: #7F4282;
+    --viin-primary-dark: #653468;
+    --viin-primary-rgb: 127, 66, 130;
+    --viin-accent: #00BBCE;
+    --viin-text: #1F2328;
+    --viin-muted: #5B6168;
+    --viin-surface: #FFFFFF;
+    --viin-background: #F6F4F8;
+    --viin-border: #DDD6E3;
+    --bs-primary: var(--viin-primary);
+    --bs-primary-rgb: var(--viin-primary-rgb);
+    --bs-link-color: var(--viin-primary);
+    --bs-link-color-rgb: var(--viin-primary-rgb);
+    --bs-link-hover-color: var(--viin-primary-dark);
+    --bs-body-color: var(--viin-text);
+    --bs-body-bg: var(--viin-background);
+    --bs-border-color: var(--viin-border);
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    color: var(--viin-text);
+    background: var(--viin-background);
+}
+
+.btn-primary {
+    --bs-btn-bg: var(--viin-primary);
+    --bs-btn-border-color: var(--viin-primary);
+    --bs-btn-hover-bg: var(--viin-primary-dark);
+    --bs-btn-hover-border-color: var(--viin-primary-dark);
+    --bs-btn-active-bg: var(--viin-primary-dark);
+    --bs-btn-active-border-color: var(--viin-primary-dark);
+    --bs-btn-disabled-bg: var(--viin-primary);
+    --bs-btn-disabled-border-color: var(--viin-primary);
+    --bs-btn-focus-shadow-rgb: var(--viin-primary-rgb);
+}
+.btn-outline-primary {
+    --bs-btn-color: var(--viin-primary);
+    --bs-btn-border-color: var(--viin-primary);
+    --bs-btn-hover-bg: var(--viin-primary);
+    --bs-btn-hover-border-color: var(--viin-primary);
+    --bs-btn-active-bg: var(--viin-primary);
+    --bs-btn-active-border-color: var(--viin-primary);
+    --bs-btn-focus-shadow-rgb: var(--viin-primary-rgb);
+}
+.form-control:focus, .form-select:focus {
+    border-color: var(--viin-primary);
+    box-shadow: 0 0 0 0.2rem rgba(var(--viin-primary-rgb), 0.25);
+}
+.form-check-input:checked { background-color: var(--viin-primary); border-color: var(--viin-primary); }
+
+/* Header */
+.viin-header {
+    background: var(--viin-surface);
+    border-bottom: 4px solid var(--viin-accent);
+}
+.viin-header-inner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    max-width: 60rem;
+    margin: 0 auto;
+    padding: 0.75rem 1rem;
+}
+.viin-brand { display: flex; align-items: center; gap: 0.5rem; font-size: 1.35rem; font-weight: 700; color: var(--viin-primary); line-height: 1.2; white-space: nowrap; }
+.viin-logo { display: block; height: 1.75rem; width: auto; }
+.viin-box-name { color: var(--viin-muted); overflow-wrap: anywhere; flex: 1 1 8rem; }
+.viin-lang { margin-left: auto; }
+
+.viin-candidate {
+    margin: 0;
+    border-radius: 0;
+    text-align: center;
+    font-weight: 600;
+}
+
+/* Page */
+.viin-main { max-width: 60rem; margin: 0 auto; padding: 1rem; }
+.viin-card {
+    background: var(--viin-surface);
+    border: 1px solid var(--viin-border);
+    border-radius: 0.5rem;
+    margin-bottom: 1rem;
+    scroll-margin-top: 0.5rem;
+}
+.viin-card > .viin-card-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--viin-border);
+}
+.viin-card > .viin-card-head h2 { font-size: 1.1rem; margin: 0; flex: 1 1 auto; }
+.viin-card-body { padding: 1rem; }
+.viin-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.viin-muted { color: var(--viin-muted); }
+.viin-break { overflow-wrap: anywhere; }
+.viin-mono { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace; font-size: 0.85rem; }
+
+/* Self-test */
+.viin-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; }
+.viin-summary .viin-summary-text { flex: 1 1 14rem; font-weight: 600; }
+.viin-line { display: flex; gap: 0.75rem; padding: 0.75rem 0; border-top: 1px solid var(--viin-border); }
+.viin-line:first-child { border-top: none; }
+.viin-line-icon { flex: 0 0 1.5rem; text-align: center; padding-top: 0.15rem; }
+.viin-line-main { flex: 1 1 auto; min-width: 0; }
+.viin-line-name { font-weight: 600; }
+.viin-line-todo { margin-top: 0.25rem; }
+
+/* Key-value rows */
+.viin-rows { margin: 0; }
+.viin-row { display: flex; flex-wrap: wrap; gap: 0.1rem 1rem; padding: 0.4rem 0; border-top: 1px solid var(--viin-border); }
+.viin-row:first-child { border-top: none; }
+.viin-row dt { flex: 0 0 11rem; font-weight: 600; margin: 0; }
+.viin-row dd { flex: 1 1 14rem; margin: 0; overflow-wrap: anywhere; }
+
+/* Devices */
+.viin-device { display: flex; gap: 0.75rem; padding: 0.9rem 0; border-top: 1px solid var(--viin-border); }
+.viin-device:first-child { border-top: none; }
+.viin-device-icon { flex: 0 0 2rem; text-align: center; font-size: 1.4rem; color: var(--viin-primary); }
+.viin-device-main { flex: 1 1 auto; min-width: 0; }
+.viin-device-name { font-weight: 600; overflow-wrap: anywhere; }
+.viin-result { margin: 0.5rem 0 0; }
+.viin-events { margin: 0.5rem 0 0; padding: 0; list-style: none; }
+.viin-events li { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+
+/* Advanced */
+.viin-subhead { font-size: 0.95rem; font-weight: 700; margin: 1.25rem 0 0.5rem; color: var(--viin-primary); }
+.viin-subhead:first-child { margin-top: 0; }
+
+/* Dialogs */
+.modal { display: block; overflow-y: auto; }
+.viin-backdrop { position: fixed; inset: 0; background: rgba(31, 35, 40, 0.5); z-index: 1050; }
+.viin-modal { z-index: 1055; }
+.viin-modal .modal-title { font-size: 1.1rem; }
+textarea.viin-mono { min-height: 8rem; }
+
+/* Restart overlay */
+.viin-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    background: rgba(246, 244, 248, 0.985);
+}
+.viin-overlay-box { max-width: 28rem; text-align: center; }
+.viin-spinner { color: var(--viin-primary); }
+
+.viin-footer { max-width: 60rem; margin: 0 auto; padding: 0.5rem 1rem 2rem; display: flex; flex-wrap: wrap; gap: 0.5rem 1.25rem; color: var(--viin-muted); }
+
+@media (max-width: 575.98px) {
+    .viin-row dt { flex-basis: 100%; }
+    .viin-main { padding: 0.75rem; }
+    .viin-card-body { padding: 0.75rem; }
+    .viin-actions .btn { flex: 1 1 auto; }
+}
+
+/* An icon in front of the text of a button keeps its distance, whether or not the template left a space. */
+.btn > .fa { margin-right: 0.25rem; }
+.form-label { display: block; }
+.modal { --bs-modal-bg: #FFFFFF; }
+.form-control, .form-select { background-color: #FFFFFF; }
+.viin-code { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace; font-size: 1.25rem; letter-spacing: 0.15em; }
