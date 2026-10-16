@@ -1,0 +1,16 @@
+# Viindoo IoT Box: brings the box back to the Wi-Fi network it keeps while the box runs, from its access point too.
+[Unit]
+Description=Viindoo IoT Box Wi-Fi network kept, joined again
+After=viin-box-wifi.service NetworkManager.service
+
+[Service]
+ExecStart=/usr/local/sbin/viin-box-wifi watch
+Restart=on-failure
+RestartSec=30
+# A stop reaches the watch alone, which ends the look it is in first: a join, the access point it starts, a restart
+# of the box service. That takes a few minutes at most.
+KillMode=mixed
+TimeoutStopSec=6min
+
+[Install]
+WantedBy=multi-user.target

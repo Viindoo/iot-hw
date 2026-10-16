@@ -1,0 +1,105 @@
+#!/usr/bin/python3 -I
+"""Name of the access point of a Viindoo IoT Box: Viindoo-IoT- and the hardware address of its Wi-Fi interface.
+
+hostapd runs this file before each start of the access point (the drop-in
+hostapd.service.d/viindoo.conf), whoever starts it: core's wireless_ap.sh as the
+box starts and after a join that failed, or the Wi-Fi watch. It sets the `ssid`
+line of the configuration hostapd reads, the one core's scripts and its status
+ticket read the name from. Core's wireless_ap.sh gives the access point the name
+IoTBox-<address> only when that line names exactly IoTBox, so the name set here
+is the one announced. The address is written without its colons, as core writes
+it, so that each box announces a name of its own; an interface that gives none
+announces Viindoo-IoT. The other lines are left as they are, and a configuration
+that names the access point so already is not written again.
+
+    viin-box-access-point-name [CONFIGURATION]
+
+VIIN_BOX_ROOT puts every path of the box under another directory, so that this
+file can run on a copy of a box; on a box it is not set.
+"""
+import os
+import re
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(os.environ.get('VIIN_BOX_ROOT') or '/')
+CONFIGURATION = '/etc/hostapd/hostapd.conf'
+# The interface core's configuration names, for one that names none.
+INTERFACE = 'wlan0'
+NAME = 'Viindoo-IoT'
+HARDWARE_ADDRESS = re.compile(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}')
+INTERFACE_NAME = re.compile(r'[A-Za-z0-9_-][A-Za-z0-9_.-]{0,14}')
+
+
+def say(text):
+    print(f'viin-box-access-point-name: {text}', flush=True)  # noqa: T201
+
+
+def interface_of(lines):
+    for line in lines:
+        key, _sign, value = line.partition('=')
+        if key == 'interface' and INTERFACE_NAME.fullmatch(value.strip()):
+            return value.strip()
+    return INTERFACE
+
+
+def name_of(interface):
+    try:
+        address = (ROOT / 'sys' / 'class' / 'net' / interface / 'address').read_text(encoding='ascii').strip().lower()
+    except (OSError, ValueError):
+        address = ''
+    if not HARDWARE_ADDRESS.fullmatch(address):
+        return NAME
+    return f'{NAME}-{address.replace(":", "")}'
+
+
+def named(lines, name):
+    """`lines` with one `ssid` line, which gives `name`, in the place of the first one."""
+    found, given = [], False
+    for line in lines:
+        if line.startswith('ssid='):
+            if not given:
+                found.append(f'ssid={name}')
+                given = True
+            continue
+        found.append(line)
+    return found if given else [*found, f'ssid={name}']
+
+
+def write(path, text):
+    """Write `text` whole beside `path`, with its mode, and put it in its place by one rename."""
+    mode = path.stat().st_mode & 0o7777
+    handle, staged = tempfile.mkstemp(dir=path.parent, prefix=f'.{path.name}.')
+    try:
+        with os.fdopen(handle, 'w', encoding='utf-8') as file:
+            file.write(text)
+        os.chmod(staged, mode)
+        os.replace(staged, path)
+    except BaseException:
+        os.unlink(staged)
+        raise
+
+
+def main(arguments):
+    path = ROOT / (arguments[0] if arguments and arguments[0] else CONFIGURATION).lstrip('/')
+    try:
+        lines = path.read_text(encoding='utf-8').splitlines()
+    except (OSError, ValueError) as error:
+        say(f'{path} cannot be read ({type(error).__name__}): the access point keeps the name it has')
+        return 1
+    name = name_of(interface_of(lines))
+    found = named(lines, name)
+    if found == lines:
+        return 0
+    try:
+        write(path, ''.join(f'{line}\n' for line in found))
+    except OSError as error:
+        say(f'{path} cannot be written ({type(error).__name__}): the access point keeps the name it has')
+        return 1
+    say(f'the access point of the box is {name}')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

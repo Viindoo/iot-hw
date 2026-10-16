@@ -1,0 +1,476 @@
+#!/usr/bin/python3 -I
+"""Wi-Fi of a Viindoo IoT Box: join the network the box keeps as it starts, and bring the box back to it as it runs.
+
+The network the box keeps is the NetworkManager profile PROFILE, of which the
+box software keeps a copy on the card (KEPT_FILES). NetworkManager reads its
+name and password from the profile; neither passes through this file.
+
+`viin-box-wifi` runs once per start of the box, before core's rc.local runs
+wireless_ap.sh: that script starts the access point of the box when the box has
+no address. This program brings the network kept up first, unless the box is
+on it already, so that the box has its address before wireless_ap.sh looks.
+When it cannot, on a box left without an address, NetworkManager is kept from
+joining it by itself, which would take the radio from the access point.
+
+`viin-box-wifi watch` then runs as long as the box does. Off the network kept
+and off its access point, the box joins it again, more and more seldom
+(REJOIN_PERIODS): NetworkManager stops trying a network whose handshake failed
+until someone asks. After ACCESS_POINT_AFTER without any address, the access
+point starts, so that a person can set the box up; a router that restarts is
+back long before. On its access point, the box leaves it to join the network
+kept once its radio hears that network - a hidden one is asked for by name -
+only while nobody sets the box up through the access point, more and more
+seldom (ACCESS_POINT_PERIODS); the access point starts again when the join
+fails. A radio may hear nothing while it serves the access point: a network not
+heard is tried anyway once the longest of those periods has passed. The access
+point stops once the box has an address on another network, a cable's. A device
+connected to the access point counts as a person setting the box up for
+PAGE_USE_WINDOW after it connected, and after each use of the box page from its
+address, which the box service notes (PAGE_USE) whether the page came through
+the web server of the box or straight to the box service: a phone or tablet
+that joined the open access point by itself, and only stays on it, holds the
+box off its network no longer.
+
+Both leave the Wi-Fi alone while a join asked from the box page holds LOCK,
+and hold it until what they started - the access point, a restart of the box
+service - is over. Neither ever fails the start of the box.
+
+    viin-box-wifi
+    viin-box-wifi watch
+"""
+import contextlib
+import fcntl
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+# The name the box software gives the profile of the network the box keeps, and its copies on the card.
+PROFILE = 'viindoo-wifi'
+KEPT_FILES = (
+    Path('/root_bypass_ramdisks/etc/NetworkManager/system-connections/viindoo-wifi.nmconnection'),
+    Path('/root_bypass_ramdisks/etc/netplan/90-NM-viindoo-wifi.yaml'),
+)
+INTERFACE = 'wlan0'
+# Held while this program, or a join asked from the box page, changes the Wi-Fi of the box.
+LOCK = Path('/run/viin-box-wifi.lock')
+# Core's script: given `force`, it starts the access point of the box unless the box has an address, and restarts the
+# box service.
+ACCESS_POINT_SCRIPT = '/home/pi/odoo/addons/point_of_sale/tools/posbox/configuration/wireless_ap.sh'
+ACCESS_POINT = '10.11.12.1/24'
+# A join from the access point restarts the box service, as a join from the box page does.
+BOX_SERVICE_RESTART = ('service', 'odoo', 'restart')
+# Seconds. How long the access point script and a restart of the box service may take: the watch holds LOCK until
+# they are over, so that no join asked from the box page starts meanwhile, which the restart would cut off.
+SCRIPT_WAIT = 180
+# The addresses the access point lends, each to the hardware address of a device: who used it, where the radio cannot
+# tell who is connected to it.
+LEASES = Path('/var/lib/misc/dnsmasq.leases')
+# Where the box service notes each use of the box page, which reads the box regularly while it is shown: {address of
+# the device: time of its last use, as `time.monotonic` gives it}. The box service makes it, empty, only when it is
+# missing, and keeps it across its own restarts.
+PAGE_USE = Path('/run/odoo/viin-page-use.json')
+# Seconds. How long a device connected to the access point counts as a person setting the box up after it connected,
+# and after it last used the box page.
+PAGE_USE_WINDOW = 600
+# Seconds. How long the Wi-Fi interface may take to be ready, NetworkManager to join a network, the radio to scan.
+READY_WAIT = 15
+JOIN_WAIT = 45
+SCAN_WAIT = 30
+# Seconds. How often the watch looks; how long it waits before each join again of a network lost, the last one
+# repeated; how long a box without any address waits before its access point starts.
+LOOK_PERIOD = 10
+REJOIN_PERIODS = (60, 120, 240, 300)
+ACCESS_POINT_AFTER = 600
+# Seconds. On the access point: how long the box waits before it leaves it for each join, the last one repeated;
+# how long before it listens again for a network it did not hear.
+ACCESS_POINT_PERIODS = (60, 120, 300, 600, 900)
+LISTEN_PERIOD = 60
+# The locale the commands run in. nmcli writes in the character set of its locale, and a character that set lacks as
+# `?`; a box whose settings name a locale it has not installed falls back to ASCII. Every system has C.UTF-8, so a
+# name reads the same whatever the box's locale settings are. iw sets no locale: it always spells a name in ASCII.
+LOCALE = 'C.UTF-8'
+# The states NetworkManager gives a device: between the two, it is joining a network.
+DISCONNECTED = 30
+CONNECTED = 100
+
+
+def run(*command, wait=120):
+    """(exit code, standard output) of `command`; a program that is missing, or that does not end in time, gives 127."""
+    try:
+        done = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              env=dict(os.environ, LC_ALL=LOCALE), check=False, timeout=wait)
+    except (OSError, subprocess.TimeoutExpired):
+        return 127, ''
+    return done.returncode, done.stdout.decode(errors='replace')
+
+
+def wait_for(*command):
+    """Run `command` and wait, SCRIPT_WAIT seconds at most, for it to end; what it writes is not read."""
+    try:
+        subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       check=False, timeout=SCRIPT_WAIT)
+    except OSError:
+        say(f'could not run {command[0]}')
+    except subprocess.TimeoutExpired:
+        say(f'{command[0]} did not end in time')
+
+
+def say(text):
+    print(f'viin-box-wifi: {text}', flush=True)  # noqa: T201
+
+
+def unescaped(value):
+    """A value of `nmcli -t`, which writes a backslash before `:` and `\\` in it."""
+    found, escaped = [], False
+    for character in value:
+        if escaped or character != '\\':
+            found.append(character)
+        escaped = not escaped and character == '\\'
+    return ''.join(found)
+
+
+def kept():
+    code, names = run('nmcli', '-t', '-g', 'NAME', 'connection', 'show')
+    return not code and PROFILE in names.splitlines()
+
+
+def state():
+    """The state NetworkManager gives the Wi-Fi interface; None when it tells none."""
+    code, shown = run('nmcli', '-t', '-g', 'GENERAL.STATE', 'device', 'show', INTERFACE)
+    number = shown.strip().split(' ', 1)[0]
+    return int(number) if not code and number.isdigit() else None
+
+
+def on_profile():
+    """Whether the box is on the network kept."""
+    if state() != CONNECTED:
+        return False
+    code, shown = run('nmcli', '-t', '-g', 'GENERAL.CONNECTION', 'device', 'show', INTERFACE)
+    return not code and unescaped(shown.rstrip('\n')) == PROFILE
+
+
+def addresses():
+    return run('hostname', '-I')[1].split()
+
+
+def up():
+    """Whether NetworkManager joined the network kept. A join asked so is joined whatever NetworkManager blocked."""
+    return not run('nmcli', '--wait', str(JOIN_WAIT), 'connection', 'up', 'id', PROFILE, 'ifname', INTERFACE,
+                   wait=JOIN_WAIT + 30)[0]
+
+
+def joins_by_itself(answer):
+    """Let NetworkManager join the network kept by itself, or not: in /etc alone, which lives in memory."""
+    run('nmcli', 'connection', 'modify', 'id', PROFILE, 'connection.autoconnect', answer)
+
+
+@contextlib.contextmanager
+def locked():
+    """Hold LOCK; give whether it is held: it is not while a join asked from the box page holds it.
+
+    A box where LOCK cannot be made has nobody else to hold it.
+    """
+    try:
+        descriptor = os.open(LOCK, os.O_RDONLY | os.O_CREAT, 0o644)
+        # The box service, which does not run as root, opens it to hold it for a join.
+        os.fchmod(descriptor, 0o644)
+    except OSError:
+        descriptor = None
+    held = True
+    if descriptor is not None:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            held = False
+    try:
+        yield held
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def main():
+    if not kept():
+        return 0
+    with locked() as held:
+        if not held:
+            say('a join asked from the box page runs: the network kept is left to it')
+            return 0
+        run('rfkill', 'unblock', 'wifi')
+        run('nmcli', 'radio', 'wifi', 'on')
+        deadline = time.monotonic() + READY_WAIT
+        # Ready: neither starting nor joining a network.
+        while (state() or 0) not in (DISCONNECTED, CONNECTED) and time.monotonic() < deadline:
+            time.sleep(1)
+        if on_profile():
+            say('the box is on the Wi-Fi network it keeps already')
+            return 0
+        if up():
+            say('joined the Wi-Fi network the box keeps')
+            return 0
+        say('could not join the Wi-Fi network the box keeps')
+        if not addresses():
+            joins_by_itself('no')
+            say('the access point of the box starts; the box looks for the network kept from there')
+    return 0
+
+
+class Watch:
+    """What the watch remembers from one look to the next, times as `time.monotonic` gives them."""
+
+    def __init__(self):
+        self.lost_since = None
+        self.rejoins = 0
+        self.next_rejoin = None
+        self.on_access_point_since = None
+        self.tries = 0
+        self.next_try = None
+        # {hardware address: (when the watch first saw it connected, when it last saw it)} of the devices connected
+        # to the access point, and of those that left it less than PAGE_USE_WINDOW ago.
+        self.stations = {}
+
+    def reset(self):
+        self.__init__()
+
+
+def period(periods, count):
+    return periods[min(count, len(periods) - 1)]
+
+
+def watch():
+    """Look after the network kept until asked to stop; a stop asked during a look waits for the look to end, so that
+    a restart of the watch - after an update of the box software - never leaves the Wi-Fi halfway."""
+    say('looks after the Wi-Fi network the box keeps')
+    watched = Watch()
+    looking, stop = [False], []
+
+    def asked_to_stop(_number, _frame):
+        stop.append(True)
+        if not looking[0]:
+            sys.exit(0)
+
+    signal.signal(signal.SIGTERM, asked_to_stop)
+    while not stop:
+        looking[0] = True
+        # A look that fails is told and the watch goes on, with what it learnt so far.
+        try:
+            look(watched, time.monotonic())
+        except Exception as error:
+            say(f'could not look at the Wi-Fi ({type(error).__name__})')
+        looking[0] = False
+        if not stop:
+            time.sleep(LOOK_PERIOD)
+    return 0
+
+
+def look(watched, now):
+    """Do what the box needs at the time `now` to stay on the network it keeps, or to come back to it."""
+    if not any(path.exists() for path in KEPT_FILES) or not kept():
+        watched.reset()
+        return
+    with locked() as held:
+        if not held:
+            return
+        if on_access_point():
+            look_from_access_point(watched, now)
+        else:
+            look_from_network(watched, now)
+
+
+def look_from_network(watched, now):
+    # The tries from the access point are kept: the access point is off for a moment while it starts again.
+    watched.on_access_point_since = None
+    found = state()
+    if found == CONNECTED:
+        if watched.lost_since is not None:
+            say('the box is on a Wi-Fi network again')
+        watched.reset()
+        return
+    if watched.lost_since is None:
+        watched.lost_since = now
+        watched.rejoins = 0
+        watched.next_rejoin = now + REJOIN_PERIODS[0]
+        if not watched.tries:
+            say('the box is off the Wi-Fi network it keeps')
+    # Only a NetworkManager that tries nothing else is asked; one that joins a network is left to it.
+    if found == DISCONNECTED and now >= watched.next_rejoin:
+        if up():
+            joins_by_itself('yes')
+            say('joined the Wi-Fi network the box keeps again')
+            watched.reset()
+            return
+        watched.rejoins += 1
+        watched.next_rejoin = now + period(REJOIN_PERIODS, watched.rejoins)
+    if now - watched.lost_since >= ACCESS_POINT_AFTER and not addresses():
+        joins_by_itself('no')
+        say('the box has had no address for a while: its access point starts, so that a person can set it up')
+        wait_for(ACCESS_POINT_SCRIPT, 'force')
+        watched.reset()
+
+
+def look_from_access_point(watched, now):
+    watched.lost_since = None
+    connected = observed_stations(watched, now)
+    if watched.on_access_point_since is None:
+        watched.on_access_point_since = now
+        watched.next_try = now + period(ACCESS_POINT_PERIODS, watched.tries)
+        joins_by_itself('no')
+        if not watched.tries:
+            say('the box is on its access point: it listens for the Wi-Fi network it keeps')
+        return
+    # As core's script decides as the box starts: a box with an address on another network has no access point.
+    if set(addresses()) - {ACCESS_POINT.split('/')[0]}:
+        if not someone_sets_the_box_up(watched, now, connected):
+            say('the box has an address on another network: its access point stops')
+            leave_access_point()
+            run('service', 'dnsmasq', 'stop')
+            joins_by_itself('yes')
+            watched.reset()
+        return
+    # Nobody setting the box up is ever cut off: scanning takes the radio from them, joining takes it away.
+    if now < watched.next_try or someone_sets_the_box_up(watched, now, connected):
+        return
+    heard = hears()
+    if heard is False and now - watched.on_access_point_since < ACCESS_POINT_PERIODS[-1]:
+        watched.next_try = now + LISTEN_PERIOD
+        return
+    # The scan took seconds, in which somebody may have connected.
+    if someone_sets_the_box_up(watched, now, observed_stations(watched, now)):
+        return
+    if heard is False:
+        say('the box has not heard the Wi-Fi network it keeps for a while: it leaves its access point to try it anyway')
+    else:
+        say('the box leaves its access point to join the Wi-Fi network it keeps')
+    leave_access_point()
+    if up():
+        joins_by_itself('yes')
+        say('joined the Wi-Fi network the box keeps again')
+        wait_for(*BOX_SERVICE_RESTART)
+        watched.reset()
+        return
+    watched.tries += 1
+    watched.next_try = now + period(ACCESS_POINT_PERIODS, watched.tries)
+    # The access point starts again now: a network not heard is not tried again before the longest period.
+    watched.on_access_point_since = now
+    joins_by_itself('no')
+    say('could not join the Wi-Fi network the box keeps: its access point starts again')
+    wait_for(ACCESS_POINT_SCRIPT, 'force')
+
+
+def leave_access_point():
+    """Stop the access point, as core's script does before a join: the radio is NetworkManager's again."""
+    run('service', 'hostapd', 'stop')
+    run('ip', 'address', 'del', ACCESS_POINT, 'dev', INTERFACE)
+    run('nmcli', 'general', 'reload')
+
+
+def on_access_point():
+    return f' {ACCESS_POINT} ' in run('ip', '-o', 'address', 'show', 'dev', INTERFACE)[1]
+
+
+def observed_stations(watched, now):
+    """The hardware addresses of the devices connected to the access point, noted in `watched`; None when nothing
+    tells.
+
+    A device keeps the time the watch first saw it until it has been away for
+    PAGE_USE_WINDOW: one that drops off the access point for a moment and
+    connects again does not get its time to open the box page anew.
+    """
+    connected = stations()
+    if connected is not None:
+        kept = {station: seen for station, seen in watched.stations.items() if now - seen[1] < PAGE_USE_WINDOW}
+        watched.stations = {**kept, **{station: (kept.get(station, (now, now))[0], now) for station in connected}}
+    return connected
+
+
+def someone_sets_the_box_up(watched, now, connected):
+    """Whether somebody is, or may be, setting the box up through its access point, `connected` as
+    `observed_stations` gave it.
+
+    A device connected to the access point counts for PAGE_USE_WINDOW after the
+    watch first saw it, the time a person takes to open the box page, then for
+    as long as the box page is used from its address. Where the box cannot
+    tell who is connected, or what they did, everybody connected counts.
+    """
+    if connected is None:
+        return True
+    if any(now - watched.stations[station][0] < PAGE_USE_WINDOW for station in connected):
+        return True
+    if not connected:
+        return False
+    users, lent = page_users(), leases()
+    if users is None or lent is None:
+        return True
+    return any(address in users for _end, station, address in lent if station in connected)
+
+
+def stations():
+    """The hardware addresses of the devices connected to the access point; None when nothing tells.
+
+    The radio tells who is connected. Where it cannot, a device that holds an
+    address the access point lent, which has not ended, stands for one.
+    """
+    code, listed = run('iw', 'dev', INTERFACE, 'station', 'dump')
+    if not code:
+        return {line.split()[1].lower() for line in listed.splitlines() if line.startswith('Station ')}
+    lent = leases()
+    # A lease that ends at 0 never ends.
+    return None if lent is None else {station for end, station, _address in lent if not end or end > time.time()}
+
+
+def leases():
+    """(end, hardware address, address) of each address the access point lent; None when they cannot be read."""
+    try:
+        lines = LEASES.read_text(encoding='utf-8', errors='replace').splitlines()
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return None
+    fields = [line.split() for line in lines]
+    return [(int(found[0]), found[1].lower(), found[2]) for found in fields if len(found) > 2 and found[0].isdigit()]
+
+
+def page_users():
+    """The addresses from which the box page was used within PAGE_USE_WINDOW; None when PAGE_USE cannot be read: a
+    box service that keeps no such record."""
+    try:
+        used = json.loads(PAGE_USE.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(used, dict):
+        return None
+    since = time.monotonic() - PAGE_USE_WINDOW
+    return {address for address, when in used.items() if isinstance(when, (int, float)) and when >= since}
+
+
+def hears():
+    """Whether the radio hears the network kept; None when it cannot tell.
+
+    The scan asks for the network by its name, which a hidden network answers
+    too; `ap-force` asks a radio that serves the access point to scan anyway.
+    """
+    code, shown = run('nmcli', '-t', '-g', '802-11-wireless.ssid', 'connection', 'show', 'id', PROFILE)
+    name = unescaped(shown.rstrip('\n'))
+    if code or not name:
+        return None
+    code, listed = run('iw', 'dev', INTERFACE, 'scan', 'ap-force', 'ssid', name, wait=SCAN_WAIT)
+    if code:
+        return None
+    return f'\tSSID: {iw_spelling(name.encode())}' in listed.splitlines()
+
+
+def iw_spelling(name):
+    """The network name `name`, bytes, as iw writes it: printable ASCII as it is, a space too unless at either end,
+    any other byte as `\\x` and two hexadecimal digits."""
+    return ''.join(
+        chr(byte) if (0x20 < byte < 0x7f and byte != 0x5c) or (byte == 0x20 and 0 < place < len(name) - 1)
+        else f'\\x{byte:02x}'
+        for place, byte in enumerate(name))
+
+
+if __name__ == '__main__':
+    sys.exit(watch() if sys.argv[1:] == ['watch'] else main())

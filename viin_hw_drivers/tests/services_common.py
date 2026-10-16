@@ -169,10 +169,7 @@ def page_text_check():
 
 
 def names_the_vendor(text):
-    """Whether `text` names the vendor of core, as the text check of the repository reads it.
-
-    "Odoo Community" passes when it names the customer's own kind of server.
-    """
+    """Whether `text` names the vendor of core, as the text check of the repository reads it."""
     return bool(page_text_check().vendor_words(text))
 
 

@@ -29,6 +29,7 @@ _build/
 .*
 !.gitignore
 !.mailmap
+!.github
 # compiled python files
 *.py[co]
 # setup.py egg_info
@@ -67,3 +68,9 @@ install/win32/meta.py
 Icon?
 ehthumbs.db
 Thumbs.db
+
+# box image build: scratch space and output
+box-image-work/
+box-image-out/
+*.img
+*.img.xz
