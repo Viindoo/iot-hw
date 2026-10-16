@@ -1,0 +1,116 @@
+# The cheap checks of the box software: script and workflow lint, the release pointer, the unit of the box
+# service, the box suite and the seam check against the core commit the pointer names. They never build an
+# image.
+#
+# They run on every pull request and on every push to a series branch or to a work branch of the box, and the
+# series branch asks for them as a required status check before it takes a merge. They do not decide whether a
+# release is published: box-image.yml does, by calling this file on the tagged commit (workflow_call, input
+# "ref") and refusing to build or publish unless it passes.
+name: box-checks
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: 'The commit or tag to check; empty checks the commit of the event that started the run'
+        required: false
+        default: ''
+        type: string
+  pull_request:
+  push:
+    branches:
+      - '[0-9][0-9].0'
+      - '[0-9][0-9].0-viindoo-iot-box-*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: box-checks-${{ inputs.ref || github.ref }}
+  cancel-in-progress: ${{ inputs.ref == '' }}
+
+jobs:
+  static:
+    name: Scripts, workflows and release pointer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Release pointer
+        run: bash box/build/check_release.sh pointer
+      - name: Shell syntax
+        run: |
+          find box -name '*.sh' -print0 | xargs -0 -n1 bash -n
+          bash -n box/system/usr/local/sbin/viin-box-first-start
+      - name: ShellCheck
+        run: |
+          docker run --rm --volume "$PWD:/repo:ro" --workdir /repo \
+            koalaman/shellcheck@sha256:2097951f02e735b613f4a34de20c40f937a6c8f18ecb170612c88c34517221fb \
+            --external-sources --shell=bash \
+            box/install/lib.sh box/install/install_layer.sh box/install/install_on_raspios.sh \
+            box/build/build_image.sh box/build/check_release.sh box/build/base-image.conf \
+            box/system/apply.sh box/system/usr/local/sbin/viin-box-first-start \
+            box/dev/softbox/softbox.sh box/dev/softbox/container/entrypoint.sh \
+            box/dev/softbox/container/print-backend.sh
+      - name: Workflow files
+        run: |
+          docker run --rm --volume "$PWD:/repo:ro" --workdir /repo \
+            rhysd/actionlint@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9 -color
+      - name: Page texts - placeholders and vendor words
+        run: python3 -I box/build/check_page_texts.py
+      - name: Unit of the box service
+        run: |
+          set -o errexit -o nounset -o pipefail
+          # The unit file of the box service is core's; the layer adds a drop-in beside it. Both are read the way
+          # systemd reads them, so a line it cannot parse is found here and not on a box.
+          commit="$(bash box/build/check_release.sh pointer | sed -n 's/^odoo_commit=//p')"
+          core="$RUNNER_TEMP/core-unit"
+          git init --quiet --initial-branch pinned "$core"
+          git -C "$core" fetch --quiet --depth 1 https://github.com/Viindoo/odoo.git "$commit"
+          unit_path="$(git -C "$core" ls-tree -r --name-only FETCH_HEAD addons/point_of_sale/tools/posbox | grep '/odoo\.service$' || true)"
+          if [ "$(printf '%s\n' "$unit_path" | grep --count .)" -ne 1 ]; then
+            echo "::error::core at $commit holds no single odoo.service under addons/point_of_sale/tools/posbox"
+            exit 1
+          fi
+          unit_dir="$RUNNER_TEMP/unit"
+          mkdir -p "$unit_dir/odoo.service.d"
+          git -C "$core" show "FETCH_HEAD:$unit_path" > "$unit_dir/odoo.service"
+          cp box/system/etc/systemd/system/odoo.service.d/viindoo.conf "$unit_dir/odoo.service.d/viindoo.conf"
+          # systemd-analyze also reports what the runner lacks and a box has (the user pi, the files under
+          # /home/pi, programs that only the box installs), and its exit status follows those reports; only a
+          # line it calls Invalid says the file itself is wrong, so only that fails this step, and all of its
+          # output stays in the log.
+          systemd-analyze verify "$unit_dir/odoo.service" > "$unit_dir/verify.txt" 2>&1 || true
+          cat "$unit_dir/verify.txt"
+          if grep --quiet 'Invalid' "$unit_dir/verify.txt"; then
+            echo "::error::systemd calls a line of the box service unit or of the drop-in Invalid"
+            exit 1
+          fi
+
+  suite:
+    name: Box suite and seam check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Core at the commit the pointer names
+        run: |
+          commit="$(bash box/build/check_release.sh pointer | sed -n 's/^odoo_commit=//p')"
+          core="$RUNNER_TEMP/core"
+          git init --quiet --initial-branch pinned "$core"
+          git -C "$core" fetch --quiet --depth 1 https://github.com/Viindoo/odoo.git "$commit"
+          git -C "$core" checkout --quiet -B pinned FETCH_HEAD
+          echo "SOFTBOX_CORE=$core" >> "$GITHUB_ENV"
+          echo "SOFTBOX_BRANCH=pinned" >> "$GITHUB_ENV"
+      - name: Build the software box
+        run: bash box/dev/softbox/softbox.sh build
+      - name: Box suite
+        run: bash box/dev/softbox/softbox.sh suite
+      - name: Seam check against that core
+        run: bash box/dev/softbox/softbox.sh run python3 /home/pi/iot-hw/viin_hw_drivers/boot.py --config /home/pi/odoo.conf
