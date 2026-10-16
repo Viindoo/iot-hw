@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8"/>
+        <meta http-equiv="cache-control" content="no-cache"/>
+        <meta http-equiv="pragma" content="no-cache"/>
+        <meta name="viewport" content="width=device-width,initial-scale=1"/>
+        <title>Viindoo IoT Box</title>
+        <link rel="icon" type="image/png" href="/viin_hw_homepage/static/img/icon.png"/>
+{% if app %}
+        <script>
+            /* Same rule as initialLanguage() in static/src/app/i18n.js, so the document has its language from the first paint. */
+            (function () {
+                var code = "en";
+                try {
+                    var chosen = window.localStorage.getItem("viin_box_language");
+                    var found = chosen === "en" || chosen === "vi";
+                    var preferred = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language];
+                    for (var i = 0; !found && i < preferred.length; i++) {
+                        var guess = String(preferred[i] || "").slice(0, 2).toLowerCase();
+                        if (guess === "en" || guess === "vi") {
+                            chosen = guess;
+                            found = true;
+                        }
+                    }
+                    code = found ? chosen : "en";
+                } catch (error) {
+                    code = "en";
+                }
+                document.documentElement.lang = code;
+            })();
+        </script>
+        <script src="/web/static/lib/owl/owl.js"></script>
+        <link href="/web/static/lib/bootstrap/dist/css/bootstrap.css" rel="stylesheet"/>
+        <link href="/web/static/src/libs/fontawesome/css/font-awesome.css" rel="stylesheet"/>
+{% if stylesheet %}
+        <link href="{{ stylesheet }}" rel="stylesheet"/>
+{% endif %}
+{% else %}
+        <style>
+            :root {
+                --viin-primary: #7F4282;
+                --viin-accent: #00BBCE;
+                --viin-text: #1F2328;
+                --viin-muted: #5B6168;
+                --viin-surface: #FFFFFF;
+                --viin-background: #F6F4F8;
+                --viin-border: #DDD6E3;
+                --viin-ok: #1A7F37;
+                --viin-warning: #9A6700;
+                --viin-failed: #CF222E;
+                --viin-pending: #5B6168;
+            }
+            * { box-sizing: border-box; }
+            body {
+                margin: 0;
+                font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                color: var(--viin-text);
+                background: var(--viin-background);
+            }
+            header {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 0.5rem 1rem;
+                padding: 1rem 1.25rem;
+                background: var(--viin-surface);
+                border-bottom: 4px solid var(--viin-accent);
+            }
+            .brand { display: flex; align-items: center; gap: 0.5rem; font-size: 1.4rem; font-weight: 700; color: var(--viin-primary); }
+            .brand img { display: block; height: 1.75rem; width: auto; }
+            .box-name { color: var(--viin-muted); overflow-wrap: anywhere; }
+            main { max-width: 52rem; margin: 0 auto; padding: 1.25rem; }
+            section {
+                background: var(--viin-surface);
+                border: 1px solid var(--viin-border);
+                border-radius: 6px;
+                padding: 1rem 1.25rem;
+                margin-bottom: 1rem;
+            }
+            h1 { font-size: 1.15rem; margin: 0 0 0.75rem; }
+            p { margin: 0 0 0.75rem; line-height: 1.45; }
+            .summary { font-weight: 600; }
+            ul.lines { list-style: none; margin: 0; padding: 0; }
+            ul.lines li {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.25rem 0.75rem;
+                padding: 0.5rem 0;
+                border-top: 1px solid var(--viin-border);
+            }
+            ul.lines li:first-child { border-top: none; }
+            .line-name { flex: 0 0 11rem; font-weight: 600; }
+            .line-reason { flex: 1 1 12rem; color: var(--viin-muted); overflow-wrap: anywhere; }
+            .state { font-weight: 600; }
+            .state-ok, .state-neutral { color: var(--viin-ok); }
+            .state-warning { color: var(--viin-warning); }
+            .state-failed { color: var(--viin-failed); }
+            .state-pending { color: var(--viin-pending); }
+            nav { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+            a, button { font: inherit; }
+            a { color: var(--viin-primary); }
+            button {
+                padding: 0.4rem 0.9rem;
+                border: 1px solid var(--viin-primary);
+                border-radius: 4px;
+                background: var(--viin-primary);
+                color: #FFFFFF;
+                cursor: pointer;
+            }
+            button:disabled { opacity: 0.6; cursor: default; }
+        </style>
+{% endif %}
+    </head>
+    <body>
+{% if app %}
+        <noscript>Viindoo IoT Box: this page needs JavaScript.</noscript>
+        <script src="{{ app }}" type="module"></script>
+{% else %}
+        <header>
+            <div class="brand"><img src="/viin_hw_homepage/static/img/viindoo-logo.svg" alt="Viindoo" width="119" height="28"/> <span>IoT Box</span></div>
+            <div class="box-name">{{ box_name }}</div>
+        </header>
+        <main>
+            <section aria-labelledby="selftest-title">
+                <h1 id="selftest-title">Self-test</h1>
+                <p>This box shows its self-test here. Send the diagnostic file to support when a line is not ok.</p>
+                <p class="summary" id="summary" aria-live="polite">Reading the self-test of the box...</p>
+                <ul class="lines" id="lines"></ul>
+                <noscript><p>This page needs JavaScript to read the self-test.</p></noscript>
+            </section>
+            <section aria-label="Actions">
+                <nav>
+                    <button type="button" id="refresh">Look again</button>
+                    <a href="/viin_hw/diagnostic">Download diagnostic file</a>
+                    <a href="/logs">Box log</a>
+                </nav>
+            </section>
+        </main>
+        <script>
+            (function () {
+                "use strict";
+                const PERIOD = 30000;
+                const STATES = {
+                    ok: "OK",
+                    neutral: "OK",
+                    warning: "Warning",
+                    failed: "Failed",
+                    pending: "Being checked",
+                };
+                const summary = document.getElementById("summary");
+                const list = document.getElementById("lines");
+                const refresh = document.getElementById("refresh");
+
+                function words(key) {
+                    const text = String(key || "").replace(/_/g, " ");
+                    return text.charAt(0).toUpperCase() + text.slice(1);
+                }
+
+                function cell(className, text) {
+                    const element = document.createElement("span");
+                    element.className = className;
+                    element.textContent = text;
+                    return element;
+                }
+
+                function show(selftest) {
+                    const state = String(selftest.state || "");
+                    summary.className = "summary state state-" + state;
+                    summary.textContent = state === "ok"
+                        ? "Every line of the self-test is ok."
+                        : "Self-test: " + (STATES[state] || words(state));
+                    list.replaceChildren();
+                    for (const line of selftest.lines || []) {
+                        const item = document.createElement("li");
+                        const reason = [words(line.reason), line.action ? "- " + words(line.action) : ""];
+                        item.append(
+                            cell("line-name", words(line.id)),
+                            cell("state state-" + line.state, STATES[line.state] || words(line.state)),
+                            cell("line-reason", reason.join(" ").trim()),
+                        );
+                        list.append(item);
+                    }
+                }
+
+                async function load(again) {
+                    refresh.disabled = true;
+                    try {
+                        const response = await fetch("/viin_hw/status" + (again ? "?refresh=1" : ""), {
+                            cache: "no-store",
+                        });
+                        if (!response.ok) {
+                            throw new Error(String(response.status));
+                        }
+                        const status = await response.json();
+                        show(status.selftest || {});
+                    } catch {
+                        summary.className = "summary state state-failed";
+                        summary.textContent = "The self-test could not be read. The box may be restarting.";
+                    } finally {
+                        refresh.disabled = false;
+                    }
+                }
+
+                refresh.addEventListener("click", () => load(true));
+                load(false);
+                setInterval(() => load(false), PERIOD);
+            })();
+        </script>
+{% endif %}
+    </body>
+</html>
