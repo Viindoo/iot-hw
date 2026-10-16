@@ -11,9 +11,6 @@ import services_common as box
 BUILD_SCRIPT = box.REPOSITORY / 'box' / 'build' / 'build_image.sh'
 INSTALL_SCRIPT = box.REPOSITORY / 'box' / 'install' / 'install_layer.sh'
 SECRET = 'S3cretFromCore'
-PAGE_TEXTS = box.REPOSITORY / 'viin_hw_homepage' / 'static' / 'src' / 'app' / 'i18n'
-VI_TEXTS = PAGE_TEXTS / 'vi.json'
-EN_TEXTS = PAGE_TEXTS / 'en.json'
 
 
 def _bash(program, *arguments, stdin=None):
@@ -271,30 +268,66 @@ class TestVendorWordsOfThePageTexts(unittest.TestCase):
     def vendor_words(self, text):
         return box.page_text_check().vendor_words(text)
 
-    def test_the_name_of_the_kind_of_server_a_customer_has_is_allowed(self):
-        own_server_in_the_language_of_the_box = json.loads(VI_TEXTS.read_text(encoding='utf-8'))['server.kinds']
-        own_server_in_english = json.loads(EN_TEXTS.read_text(encoding='utf-8'))['server.kinds']
+    def test_the_vendor_naming_a_kind_of_server_is_found(self):
         for text in ('Connect to your Odoo Community server', 'your own Odoo Community server with the Viindoo apps',
-                     own_server_in_the_language_of_the_box, own_server_in_english, 'Odoo Community.'):
+                     'm\u00e1y ch\u1ee7 Odoo Community c\u1ee7a ri\u00eang b\u1ea1n', 'Odoo Community.', 'Odoo Community'):
             with self.subTest(text=text):
-                self.assertEqual(self.vendor_words(text), [])
+                self.assertTrue(self.vendor_words(text))
 
-    def test_odoo_community_naming_a_product_and_not_a_kind_of_server_is_found(self):
-        for text in ('Odoo Community Edition', 'Odoo Community IoT Box', 'Odoo Communityx', "Odoo Community's IoT Box",
-                     'Odoo Community\u2019s IoT Box', 'Odoo Community-Edition', 'Odoo Community (Edition)',
-                     'Odoo Community \u00c9dition', 'Odoo Community \u1ee8ng d\u1ee5ng'):
+    def test_the_vendor_naming_a_product_is_found(self):
+        for text in ('Odoo Community Edition', 'Odoo Community IoT Box', "Odoo Community's IoT Box",
+                     'Odoo Community\u2019s IoT Box', 'Odoo Community-Edition', 'Odoo Community (Edition)'):
             with self.subTest(text=text):
                 self.assertTrue(self.vendor_words(text))
 
     def test_the_vendor_named_in_any_other_way_is_found(self):
         for text in ("Odoo's IoT Box", 'an ENTERPRISE plan', 'see odoo.com', 'an enterprise network',
-                     'ODOO Communityx server', 'Odoo community'):
+                     'ODOO Communityx server', 'Odoo community', 'odoo'):
             with self.subTest(text=text):
                 self.assertTrue(self.vendor_words(text))
+
+    def test_the_viindoo_names_of_servers_and_of_the_box_are_not_the_vendor(self):
+        for text in ('The server can be Viindoo Cloud, or your own Viindoo server.',
+                     'M\u00e1y ch\u1ee7 c\u00f3 th\u1ec3 l\u00e0 Viindoo Cloud, ho\u1eb7c m\u00e1y ch\u1ee7 Viindoo c\u1ee7a ri\u00eang b\u1ea1n.',
+                     'Viindoo IoT Box', 'viindoo.com'):
+            with self.subTest(text=text):
+                self.assertEqual(self.vendor_words(text), [])
 
     def test_a_series_number_is_found_and_a_version_of_another_shape_is_not(self):
         self.assertTrue(self.vendor_words('Works with 18.0'))
         self.assertEqual(self.vendor_words('Image 1.0, address 192.168.10.1, 118.04'), [])
+
+
+class TestKeysOfThePageTexts(unittest.TestCase):
+    """The rule that a text of the box page exists in every language the page is shown in."""
+
+    def missing(self, **languages):
+        return box.page_text_check().missing_keys(languages)
+
+    def test_a_key_missing_in_vietnamese_is_reported_with_its_file(self):
+        found = self.missing(**{'en.json': {'save': 'Save', 'cancel': 'Cancel'}, 'vi.json': {'save': 'L\u01b0u'}})
+        self.assertEqual(len(found), 1)
+        self.assertIn('vi.json', found[0])
+        self.assertIn('"cancel"', found[0])
+
+    def test_a_key_missing_in_english_is_reported_with_its_file(self):
+        found = self.missing(**{'en.json': {'save': 'Save'}, 'vi.json': {'save': 'L\u01b0u', 'cancel': 'H\u1ee7y'}})
+        self.assertEqual(len(found), 1)
+        self.assertIn('en.json', found[0])
+        self.assertIn('"cancel"', found[0])
+
+    def test_a_key_missing_in_a_third_language_is_reported(self):
+        found = self.missing(**{'en.json': {'save': 'Save'}, 'vi.json': {'save': 'L\u01b0u'}, 'fr.json': {}})
+        self.assertEqual(len(found), 1)
+        self.assertIn('fr.json', found[0])
+
+    def test_languages_with_the_same_keys_are_clean(self):
+        self.assertEqual(self.missing(**{'en.json': {'save': 'Save'}, 'vi.json': {'save': 'L\u01b0u'}}), [])
+
+    def test_the_texts_of_the_box_page_hold_the_same_keys_in_every_language(self):
+        directory = box.REPOSITORY / 'viin_hw_homepage' / 'static' / 'src' / 'app' / 'i18n'
+        texts = {file.name: json.loads(file.read_text(encoding='utf-8')) for file in directory.glob('*.json')}
+        self.assertEqual(self.missing(**texts), [])
 
 
 def _parse(path):

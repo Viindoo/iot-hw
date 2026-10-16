@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# First start of a Viindoo IoT Box: the box takes a master password and a host name of its own.
+#
+# Every card is written from the same image, so every new box would share one master password and
+# announce one name. Both are made once, before the box service starts. The password is random and
+# is written into the configuration of the box service without being shown anywhere; the image
+# carries an empty one, which forbids its use. The name is made from the serial number of the board;
+# it is given once, at the first start, and nothing on the box changes it later. The name people use
+# is the Box Name on the server.
+#
+# VIIN_BOX_ROOT puts every path of the box under another directory, so that this file can run on a
+# copy of a box; on a box it is not set.
+set -o errexit
+set -o nounset
+set -o pipefail
+
+readonly ROOT="${VIIN_BOX_ROOT:-}"
+readonly HOME_DIR="${ROOT}/home/pi"
+readonly DONE="${HOME_DIR}/viin-box-first-start-done"
+readonly CONF="${HOME_DIR}/odoo.conf"
+readonly SERIAL_FILE="${ROOT}/sys/firmware/devicetree/base/serial-number"
+# The card is read-only on a box; the second path leads to it under the directories that live in memory.
+# The home of the box user is on the card itself, so opening the card opens the configuration too.
+readonly CARD="${ROOT}/ ${ROOT}/root_bypass_ramdisks"
+
+closed=""
+
+read_only() {
+    awk -v at="$1" '$2 == at { state = ("," $4 ",") ~ /,ro,/ } END { exit !state }' /proc/mounts 2> /dev/null
+}
+
+open_card() {
+    local point
+    for point in ${CARD}; do
+        if read_only "${point}"; then
+            mount -o remount,rw "${point}"
+            closed="${closed} ${point}"
+        fi
+    done
+}
+
+close_card() {
+    local point
+    for point in ${closed}; do
+        mount -o remount,ro "${point}" || true
+    done
+    # Closing the card closes the directory of the print server with it, which must stay writable.
+    if [ -n "${closed}" ] && mountpoint -q "${ROOT}/root_bypass_ramdisks/etc/cups"; then
+        mount -o remount,rw "${ROOT}/root_bypass_ramdisks/etc/cups" || true
+    fi
+}
+
+# The files are written in place: on some systems they cannot be replaced by another file.
+name_in() {
+    local etc="$1" name="$2" hosts
+    [ -d "${etc}" ] || return 0
+    echo "${name}" > "${etc}/hostname"
+    hosts="$(grep -v '^127\.0\.1\.1[[:space:]]' "${etc}/hosts" 2> /dev/null || true)"
+    printf '%s\n127.0.1.1\t%s\n' "${hosts}" "${name}" > "${etc}/hosts"
+}
+
+# The key goes into the [options] section, the one Odoo reads, wherever the other sections lie: core's
+# box settings come last in the file once the box has saved any. The new configuration is written whole
+# beside the old one and takes its place by one rename, with the owner and the mode of the old one, so a
+# power cut leaves the old file or the new one. The password reaches the program through a pipe: it is
+# on no command line and in no log.
+readonly SET_MASTER_PASSWORD='
+import configparser
+import os
+import sys
+import tempfile
+
+path = sys.argv[1]
+password = sys.stdin.read().strip()
+if not password:
+    sys.exit("no master password was given")
+parser = configparser.RawConfigParser()
+parser.optionxform = str
+with open(path, encoding="utf-8") as source:
+    parser.read_file(source)
+if not parser.has_section("options"):
+    parser.add_section("options")
+parser.set("options", "admin_passwd", password)
+original = os.stat(path)
+handle, staged = tempfile.mkstemp(dir=os.path.dirname(path), prefix=os.path.basename(path) + ".")
+try:
+    with os.fdopen(handle, "w", encoding="utf-8") as file:
+        parser.write(file)
+        file.flush()
+        os.fsync(file.fileno())
+    os.chown(staged, original.st_uid, original.st_gid)
+    os.chmod(staged, original.st_mode & 0o7777)
+    os.replace(staged, path)
+except BaseException:
+    os.unlink(staged)
+    raise
+'
+
+give_master_password() {
+    local password
+    [ -f "${CONF}" ] || { echo "viin-box-first-start: ${CONF} is missing" >&2; return 1; }
+    password="$(openssl rand -hex 24)"
+    [ "${#password}" -eq 48 ] || { echo "viin-box-first-start: no master password could be made" >&2; return 1; }
+    printf '%s\n' "${password}" | python3 -I -c "${SET_MASTER_PASSWORD}" "${CONF}"
+}
+
+give_host_name() {
+    local serial name
+    serial=""
+    if [ -r "${SERIAL_FILE}" ]; then
+        serial="$(tr -d '\0' < "${SERIAL_FILE}" | tr 'A-F' 'a-f' | tr -cd '0-9a-f' || true)"
+    fi
+    if [ "${#serial}" -lt 4 ]; then
+        echo "viin-box-first-start: the board gives no serial number; the host name stays $(hostname)" >&2
+        return 0
+    fi
+    name="viindoo-iot-${serial: -4}"
+    name_in "${ROOT}/etc" "${name}"
+    name_in "${ROOT}/root_bypass_ramdisks/etc" "${name}"
+    if [ -z "${ROOT}" ]; then
+        hostname "${name}" || echo "viin-box-first-start: the running system keeps its name until it restarts" >&2
+    fi
+    echo "viin-box-first-start: this box is ${name}"
+}
+
+main() {
+    [ ! -e "${DONE}" ] || exit 0
+    trap close_card EXIT
+    open_card
+    give_master_password
+    give_host_name
+    touch "${DONE}"
+    chown --reference="${HOME_DIR}" "${DONE}"
+    echo "viin-box-first-start: this box has a master password of its own"
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    main
+fi

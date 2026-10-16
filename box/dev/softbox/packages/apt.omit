@@ -1,0 +1,26 @@
+# Packages of the box image that the software box leaves out.
+# One package per line; the text after the name says why.
+
+chromium-browser            not packaged under this name for Debian on x86; screens are not simulated
+python3-libcamera           not packaged for Debian on x86; cameras are not simulated
+firefox-esr                 screens are not simulated
+lightdm                     screens are not simulated
+openbox                     screens are not simulated
+unclutter                   screens are not simulated
+x11-utils                   screens are not simulated
+xdotool                     screens are not simulated
+xinput                      screens are not simulated
+xserver-xorg-input-evdev    screens are not simulated
+xserver-xorg-video-dummy    screens are not simulated
+xserver-xorg-video-fbdev    screens are not simulated
+dbus-x11                    screens are not simulated
+fswebcam                    cameras are not simulated
+hostapd                     Wi-Fi and the access point are not simulated
+dnsmasq                     Wi-Fi and the access point are not simulated
+iw                          Wi-Fi and the access point are not simulated
+printer-driver-all          drivers of real printers; the print queues of the software box are raw
+console-data                keyboard maps of the console; the container has no console
+kpartx                      tool of the image build and of the card upgrade
+localepurge                 tool of the image build
+screen                      operator tool
+vim                         operator tool
