@@ -1,0 +1,14 @@
+# Viindoo IoT Box: gives a new box its own master password and host name, once, before the box service starts or anything announces or uses the name.
+[Unit]
+Description=Viindoo IoT Box first start
+DefaultDependencies=no
+After=ramdisks.service
+Before=basic.target
+ConditionPathExists=!/home/pi/viin-box-first-start-done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/viin-box-first-start
+
+[Install]
+WantedBy=basic.target

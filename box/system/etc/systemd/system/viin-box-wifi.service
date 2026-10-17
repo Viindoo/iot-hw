@@ -1,0 +1,13 @@
+# Viindoo IoT Box: joins the Wi-Fi network the box keeps before rc.local runs core's wireless_ap.sh, which starts the access point of the box only when the box has no address.
+[Unit]
+Description=Viindoo IoT Box Wi-Fi network kept
+After=NetworkManager.service
+Before=rc-local.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/viin-box-wifi
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

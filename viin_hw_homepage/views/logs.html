@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8"/>
+        <meta http-equiv="cache-control" content="no-cache"/>
+        <meta http-equiv="pragma" content="no-cache"/>
+        <meta name="viewport" content="width=device-width,initial-scale=1"/>
+        <title>Viindoo IoT Box - Log</title>
+        <link rel="icon" type="image/png" href="/viin_hw_homepage/static/img/icon.png"/>
+        <style>
+            :root {
+                --viin-primary: #7F4282;
+                --viin-accent: #00BBCE;
+                --viin-log-background: #15111A;
+                --viin-log-text: #F2EEF5;
+                --viin-bar-text: #FFFFFF;
+            }
+            * { box-sizing: border-box; }
+            html, body { height: 100%; }
+            body {
+                margin: 0;
+                display: flex;
+                flex-direction: column;
+                font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                background: var(--viin-log-background);
+                color: var(--viin-log-text);
+            }
+            header {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 0.5rem 1rem;
+                padding: 0.6rem 1rem;
+                background: var(--viin-primary);
+                color: var(--viin-bar-text);
+                border-bottom: 3px solid var(--viin-accent);
+            }
+            .brand { display: flex; align-items: center; gap: 0.5rem; font-weight: 700; }
+            .brand img { display: block; height: 1.4rem; width: auto; }
+            .box-name { opacity: 0.85; overflow-wrap: anywhere; }
+            nav { margin-left: auto; display: flex; flex-wrap: wrap; gap: 1rem; }
+            nav a { color: var(--viin-bar-text); }
+            #logs {
+                flex: 1;
+                margin: 0;
+                padding: 0.75rem 1rem;
+                overflow: auto;
+                font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+                font-size: 0.85rem;
+                white-space: pre-wrap;
+                overflow-wrap: anywhere;
+            }
+        </style>
+    </head>
+    <body>
+        <header>
+            <span class="brand"><img src="/viin_hw_homepage/static/img/viindoo-logo-inverted.svg" alt="Viindoo" width="95" height="22"/> <span data-text="logs.heading">IoT Box - Log</span></span>
+            <span class="box-name">{{ box_name }}</span>
+            <nav>
+                <a href="/viin_hw/diagnostic" data-text="selftest.diagnostic">Download diagnostic file</a>
+                <a href="/" data-text="logs.box_page">Box page</a>
+            </nav>
+        </header>
+        <pre id="logs" aria-live="off"></pre>
+        <noscript><p data-text="logs.needs_javascript">This page needs JavaScript to read the log of the box.</p></noscript>
+        <script>
+            (function () {
+                "use strict";
+                const PERIOD = 1000;
+                const TEXTS = "/viin_hw_homepage/static/src/app/i18n/";
+
+                // The language of the box page: the one the person chose there, else the one of the browser (same rule as the box page).
+                function pageLanguage() {
+                    try {
+                        const chosen = window.localStorage.getItem("viin_box_language");
+                        if (chosen === "en" || chosen === "vi") {
+                            return chosen;
+                        }
+                    } catch {
+                        // No stored choice: the browser decides.
+                    }
+                    const preferred = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language];
+                    for (const language of preferred) {
+                        const code = String(language || "").slice(0, 2).toLowerCase();
+                        if (code === "en" || code === "vi") {
+                            return code;
+                        }
+                    }
+                    return "en";
+                }
+
+                // The words of the page come from the texts of the box page; the English written here stays when they cannot be read.
+                async function translate() {
+                    const code = pageLanguage();
+                    document.documentElement.lang = code;
+                    try {
+                        const response = await fetch(TEXTS + code + ".json", { cache: "no-cache" });
+                        if (!response.ok) {
+                            return;
+                        }
+                        const texts = await response.json();
+                        for (const element of document.querySelectorAll("[data-text]")) {
+                            const text = texts[element.dataset.text];
+                            if (typeof text === "string") {
+                                element.textContent = text;
+                            }
+                        }
+                        if (typeof texts["logs.title"] === "string") {
+                            document.title = texts["logs.title"];
+                        }
+                    } catch {
+                        // The page stays in English.
+                    }
+                }
+
+                translate();
+                const logs = document.getElementById("logs");
+                let reading = false;
+
+                async function getLogs() {
+                    if (reading) {
+                        return;
+                    }
+                    reading = true;
+                    try {
+                        const response = await fetch("/hw_posbox_homepage/iot_logs", { cache: "no-store" });
+                        if (!response.ok) {
+                            return;
+                        }
+                        const data = await response.json();
+                        // A reader who scrolled up to read an older line keeps it in view.
+                        const atEnd = logs.scrollTop + logs.clientHeight >= logs.scrollHeight - 4;
+                        logs.textContent = data.logs || "";
+                        if (atEnd) {
+                            logs.scrollTop = logs.scrollHeight;
+                        }
+                    } catch {
+                        // The box may be restarting: the next look reads the log again.
+                    } finally {
+                        reading = false;
+                    }
+                }
+
+                getLogs();
+                setInterval(getLogs, PERIOD);
+            })();
+        </script>
+    </body>
+</html>

@@ -1,0 +1,5 @@
+# Python packages of the box image that the software box leaves out.
+# One package per line; the text after the name says why.
+
+RPi.GPIO                    drives the pins of a Raspberry Pi; refuses to load on any other board
+vcgencmd                    wraps a firmware command that exists only on a Raspberry Pi

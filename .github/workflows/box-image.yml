@@ -1,0 +1,337 @@
+# Builds the image of a box release, publishes it on the release page of this repository and, for a supported
+# release, moves the release channel of the series that boxes follow.
+#
+# The push of a tag box-<series>-<release> is the only automatic trigger: a push runs the workflows of its own
+# commit, while a manual start needs this file on the default branch, which holds the older code until the box
+# work is merged. After the merge the manual start works too: start it from the series branch, which the
+# environments below list by its exact name, so both kinds of release publish from there.
+#   box-<series>-rc.<n>  builds a CANDIDATE from any commit and publishes a pre-release. While the series branch
+#                        holds no box/build/check_release.sh yet, this is the only kind of tag accepted.
+#   any other release    builds a supported image. The checker of the SERIES BRANCH (never the one in the tagged
+#                        tree) refuses it unless its commit is on the series branch and its pointer is not a
+#                        candidate's.
+#
+# The jobs, in order:
+#   gate     reads the tag with the checker of the series branch and says which kind of image it may make
+#   checks   box-checks.yml on the tagged commit
+#   build    the image; it fails if its own reading of the tag differs from the gate's
+#   publish  the release page. A supported release runs in the environment box-release (the owner approves); a
+#            candidate runs in the environment box-candidate, which holds no secret. A supported release page is
+#            never replaced, only a candidate's files are
+#   advance  supported release only: refuses a withdrawn release, then moves refs/heads/box-release/<series>, the
+#            ref boxes follow, to the tagged commit, in the environment box-release and with the deploy key of
+#            that environment. It moves the channel forward only. "Re-run failed jobs" finishes an advance that
+#            failed after a good publish.
+#   latest   supported release only: marks the release page as the latest one, once the channel has been moved
+#            and read back
+#
+# What this holds and what it does not: a run for a tag uses the workflow file of the tagged commit, and anyone
+# who can write to the repository can make a release page by hand. The checker of the series branch stops
+# mistakes; the environment and the rulesets of the repository stop a single actor; what customers' boxes trust
+# is the release channel, which only the job advance can move.
+name: box-image
+
+on:
+  push:
+    tags:
+      - 'box-*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'The tag to build, box-<series>-<release>'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: box-image-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Which kind of image this tag may make
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      mode: ${{ steps.facts.outputs.mode }}
+      series: ${{ steps.facts.outputs.series }}
+      release: ${{ steps.facts.outputs.release }}
+      channel: ${{ steps.facts.outputs.channel }}
+      layer_commit: ${{ steps.facts.outputs.layer_commit }}
+    steps:
+      - name: The tag name
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -o errexit -o nounset -o pipefail
+          if [[ ! "$TAG" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::the tag holds a character a tag name of this repository does not use"
+            exit 1
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read the tag with the checker of the series branch
+        id: facts
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -o errexit -o nounset -o pipefail
+          if [[ ! "$TAG" =~ ^box-([0-9]+\.[0-9]+)-[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::$TAG is not a tag of the form box-<series>-<release>"
+            exit 1
+          fi
+          series="${BASH_REMATCH[1]}"
+          fallback=false
+          git fetch --quiet origin "+refs/heads/${series}:refs/remotes/origin/${series}" || true
+          if git cat-file -e "origin/${series}:box/build/check_release.sh" 2> /dev/null; then
+            git show "origin/${series}:box/build/check_release.sh" > "$RUNNER_TEMP/check_release.sh"
+            bash "$RUNNER_TEMP/check_release.sh" tag "$TAG" --series-ref "origin/${series}" --repository "$PWD" \
+              > "$RUNNER_TEMP/facts.raw"
+          else
+            echo "The branch ${series} holds no checker yet: only a candidate tag is accepted."
+            fallback=true
+            if [[ ! "$TAG" =~ ^box-[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]; then
+              echo "::error::$TAG is not a candidate tag, and the branch ${series} holds no checker to decide a supported release"
+              exit 1
+            fi
+            bash box/build/check_release.sh tag "$TAG" --repository "$PWD" > "$RUNNER_TEMP/facts.raw"
+            if ! grep --quiet --line-regexp 'mode=candidate' "$RUNNER_TEMP/facts.raw"; then
+              echo "::error::the pointer of $TAG does not say candidate"
+              exit 1
+            fi
+          fi
+          # Only the facts the jobs below read are passed on, each as a plain value.
+          grep --extended-regexp \
+            '^(series|release|candidate|odoo_commit|min_image|mode|layer_commit|channel)=[0-9A-Za-z._/:-]*$' \
+            "$RUNNER_TEMP/facts.raw" > "$RUNNER_TEMP/facts"
+          if ! grep --extended-regexp --quiet '^mode=(candidate|supported)$' "$RUNNER_TEMP/facts" \
+            || ! grep --extended-regexp --quiet '^layer_commit=[0-9a-f]{40}$' "$RUNNER_TEMP/facts"; then
+            echo "::error::the checker did not say which kind of release $TAG is, or which commit it names"
+            exit 1
+          fi
+          if [ "$fallback" = true ]; then
+            # The checker of the tagged tree decided this, so what it names is held to the candidate rules here:
+            # the branch every candidate box follows, and the commit of the tag itself.
+            tag_commit="$(git rev-parse --verify --quiet "refs/tags/${TAG}^{commit}")"
+            if ! grep --fixed-strings --line-regexp --quiet "channel=refs/heads/box-candidate/${series}" "$RUNNER_TEMP/facts" \
+              || ! grep --fixed-strings --line-regexp --quiet "layer_commit=${tag_commit}" "$RUNNER_TEMP/facts"; then
+              echo "::error::the checker of the tagged tree names a channel other than refs/heads/box-candidate/${series}, or a commit other than the one of $TAG"
+              exit 1
+            fi
+          fi
+          cat "$RUNNER_TEMP/facts"
+          cat "$RUNNER_TEMP/facts" >> "$GITHUB_OUTPUT"
+
+  checks:
+    name: Checks of the tagged commit
+    needs: gate
+    permissions:
+      contents: read
+    uses: ./.github/workflows/box-checks.yml
+    with:
+      ref: ${{ needs.gate.outputs.layer_commit }}
+
+  build:
+    name: Build the image
+    needs: [gate, checks]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.gate.outputs.layer_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends qemu-user-static binfmt-support kpartx zerofree xz-utils rsync fdisk wget
+      - name: A unit the image script of core reloads
+        run: |
+          printf '[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/true\nExecReload=/bin/true\n' \
+            | sudo tee /run/systemd/system/NetworkManager.service > /dev/null
+          sudo systemctl daemon-reload
+          sudo systemctl start NetworkManager.service
+      - name: Build
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+          SERIES: ${{ needs.gate.outputs.series }}
+          MODE: ${{ needs.gate.outputs.mode }}
+          COMMIT: ${{ needs.gate.outputs.layer_commit }}
+        run: |
+          sudo bash box/build/build_image.sh --tag "$TAG" --series-ref "origin/${SERIES}" --expect-mode "$MODE" \
+            --expect-commit "$COMMIT" --work "$RUNNER_TEMP/work" --output "$RUNNER_TEMP/out"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: box-image
+          path: ${{ runner.temp }}/out/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    name: Publish the release page
+    needs: [gate, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # A candidate never runs in the environment that holds the deploy key. The deployment refs of both
+    # environments are the tag patterns and the exact names of the series branches (see the README).
+    environment: ${{ needs.gate.outputs.mode == 'supported' && 'box-release' || 'box-candidate' }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: box-image
+          path: out
+      - name: Release page
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          MODE: ${{ needs.gate.outputs.mode }}
+          SERIES: ${{ needs.gate.outputs.series }}
+          RELEASE: ${{ needs.gate.outputs.release }}
+          CHANNEL: ${{ needs.gate.outputs.channel }}
+          LAYER_COMMIT: ${{ needs.gate.outputs.layer_commit }}
+        run: |
+          set -o errexit -o nounset -o pipefail
+          page_exists=false
+          if page="$(gh release view "$TAG" 2>&1)"; then
+            page_exists=true
+          elif ! grep --quiet 'release not found' <<< "$page"; then
+            echo "::error::the release page of $TAG could not be read: $page"
+            exit 1
+          fi
+          if [ "$MODE" = candidate ]; then
+            title="CANDIDATE ${SERIES} ${RELEASE} - internal test build, do not install"
+            cat > notes.md <<NOTES
+          This is a candidate build for Viindoo's own test box. It is not a supported release and must not be
+          written to a box that serves a customer. A box written from it follows the branch \`${CHANNEL#refs/heads/}\`.
+          NOTES
+            kind=(--prerelease --latest=false)
+            # The branch a candidate box follows starts at the tagged commit; an existing one is never moved here.
+            gh api "repos/${GH_REPO}/git/refs" -f "ref=${CHANNEL}" -f "sha=${LAYER_COMMIT}" > /dev/null \
+              || echo "The branch ${CHANNEL} exists already and stays where it is."
+          else
+            if [ "$page_exists" = true ]; then
+              echo "::error::a supported release is never replaced; publish a new release"
+              exit 1
+            fi
+            title="Viindoo IoT Box ${SERIES} ${RELEASE}"
+            cat > notes.md <<NOTES
+          Image of the Viindoo IoT Box. Download the \`.img.xz\` file and \`SHA256SUMS\` into one folder and check the
+          file there: \`sha256sum --check SHA256SUMS\` on Linux, \`shasum -a 256 --check SHA256SUMS\` on macOS (both
+          print \`OK\` for the image). Windows has no such option: run \`certutil -hashfile <file> SHA256\` and
+          compare the hash it prints with the one beside the file name in \`SHA256SUMS\`. Then write the image with
+          Raspberry Pi Imager: "Use custom", without OS customisation.
+          \`manifest.txt\` is not needed for that: it lists what the image holds.
+          NOTES
+            kind=(--latest=false)
+          fi
+          if [ "$page_exists" = true ]; then
+            gh release upload "$TAG" out/* --clobber
+          else
+            gh release create "$TAG" out/* --verify-tag --title "$title" --notes-file notes.md "${kind[@]}"
+          fi
+
+  advance:
+    name: Move the release channel
+    needs: [gate, publish]
+    if: needs.gate.outputs.mode == 'supported'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: box-release
+    concurrency:
+      group: box-release-${{ needs.gate.outputs.series }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.gate.outputs.layer_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The release page is not withdrawn
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -o errexit -o nounset -o pipefail
+          if ! page="$(gh release view "$TAG" --json name,isPrerelease,isDraft --jq '[.name, (.isPrerelease or .isDraft | tostring)] | join("|")')"; then
+            echo "::error::the release page of $TAG could not be read"
+            exit 1
+          fi
+          if [[ "$page" == WITHDRAWN* ]] || [[ "$page" == *"|true" ]]; then
+            echo "::error::the release page of $TAG is withdrawn, a pre-release or a draft: the channel is not moved to it"
+            exit 1
+          fi
+      - name: Move the channel forward to the tagged commit
+        env:
+          DEPLOY_KEY: ${{ secrets.BOX_RELEASE_DEPLOY_KEY }}
+          REPOSITORY: ${{ github.repository }}
+          SERIES: ${{ needs.gate.outputs.series }}
+          COMMIT: ${{ needs.gate.outputs.layer_commit }}
+        run: |
+          set -o errexit -o nounset -o pipefail
+          if [ -z "$DEPLOY_KEY" ]; then
+            echo "::error::the environment box-release holds no secret BOX_RELEASE_DEPLOY_KEY"
+            exit 1
+          fi
+          ssh_dir="$RUNNER_TEMP/ssh"
+          install -d -m 700 "$ssh_dir"
+          printf '%s\n' "$DEPLOY_KEY" > "$ssh_dir/key"
+          chmod 600 "$ssh_dir/key"
+          # The ed25519 host key GitHub publishes for ssh.
+          echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$ssh_dir/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $ssh_dir/key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$ssh_dir/known_hosts"
+          url="git@github.com:${REPOSITORY}.git"
+          channel="refs/heads/box-release/${SERIES}"
+          channel_head() {
+            git ls-remote "$url" "$channel" | awk -v ref="$channel" '$2 == ref {print $1}'
+          }
+          head="$(channel_head)"
+          if [ -n "$head" ]; then
+            git fetch --quiet "$url" "+${channel}:refs/remotes/release-channel/${SERIES}"
+            if ! git merge-base --is-ancestor "$head" "$COMMIT"; then
+              echo "::error::the release channel is at $head, which the tagged commit $COMMIT does not contain: the channel only moves forward"
+              exit 1
+            fi
+          fi
+          git push "$url" "${COMMIT}:${channel}"
+          seen="$(channel_head)"
+          if [ "$seen" != "$COMMIT" ]; then
+            echo "::error::the release channel shows ${seen:-nothing} after the push, not $COMMIT"
+            exit 1
+          fi
+          echo "The release channel ${channel} is at $COMMIT."
+      - name: Remove the key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/ssh"
+
+  latest:
+    name: Mark the release as the latest
+    needs: [gate, advance]
+    if: needs.gate.outputs.mode == 'supported'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: gh release edit "$TAG" --latest

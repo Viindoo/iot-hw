@@ -1,7 +1,3 @@
-from . import DisplayDriver_L
-from . import PrinterDriver_L
-from . import SerialScaleDriver
-from . import controllers
-from odoo.addons.viin_hw_drivers.tools import viin_helpers
+from . import boot
 
-viin_helpers.load_iot_handlers('viin_hw_drivers')
+boot.start()
