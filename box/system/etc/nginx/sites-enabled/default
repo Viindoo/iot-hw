@@ -1,0 +1,62 @@
+# Web server of a Viindoo IoT Box.
+#
+# The box is reached by its address or by its host name, with the certificate of the box, and
+# - when it holds one - by a name of its own with a certificate issued for that name. Each name
+# is one "server" block that holds a name and a certificate and nothing else: every rule is in
+# viindoo/box.conf, which all blocks include, so that no two names can ever be served differently.
+
+# The address a request arrived at, as an address is written in a link.
+map $server_addr $viin_box_address {
+    default  $server_addr;
+    "~:"     "[$server_addr]";
+}
+
+# Whether a request names the box itself: an address, or the host name of this machine.
+map "$host|$hostname" $viin_names_box {
+    default                                              0;
+    "~^localhost\|"                                      1;
+    "~^[0-9.]+\|"                                        1;
+    "~^\[[0-9a-f:.]+\]\|"                                1;
+    "~*^(?<viin_named>[^|]+?)(\.local)?\|\k<viin_named>$"  1;
+}
+
+# The answer to a browser that asks, before it lets a public page call an address of a private
+# network, whether this device agrees. It is given only for a request the box service itself
+# answers to other web sites: this file opens no route to another site.
+map "$request_method|$http_access_control_request_private_network|$upstream_http_access_control_allow_origin" $viin_private_network {
+    default                 "";
+    "~^OPTIONS\|true\|.+"   "true";
+}
+
+# By address or host name, with the certificate of the box. A PC that accepted this certificate
+# once is not asked again when another name arrives or goes: this block never changes with it.
+server {
+    listen 443 ssl http2 default_server;
+    listen [::]:443 ssl http2 default_server;
+    server_name _;
+
+    ssl_certificate /etc/ssl/certs/nginx-cert.crt;
+    ssl_certificate_key /etc/ssl/private/nginx-cert.key;
+
+    include /etc/nginx/viindoo/box.conf;
+}
+
+# One file per other name the box holds, written when the name is installed and removed when
+# it is lost; viindoo/name.conf.template is the whole of such a file.
+include /etc/nginx/viindoo/names/*.conf;
+
+# Without a certificate, a name is proof of nothing: a request that names anything but the box
+# itself is sent on to the address it arrived at. A name somebody else pointed at the box is
+# never served as if it were the box, and the page still opens on the box's own network, where
+# every name leads to the box until it has joined a network.
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    if ($viin_names_box = 0) {
+        return 302 http://$viin_box_address$request_uri;
+    }
+
+    include /etc/nginx/viindoo/box.conf;
+}

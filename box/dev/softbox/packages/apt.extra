@@ -1,0 +1,17 @@
+# Packages the software box adds to the list of the box image.
+# The first group is on a box already, as part of the operating system the image is built on.
+# One package per line; the text after the name says why.
+
+sudo                        core runs its system commands through sudo
+systemd                     core calls systemctl to ask whether the access point runs; never started as init
+wireless-tools              core reads the Wi-Fi name with iwconfig and iwlist
+procps                      core looks for and signals processes with pgrep and pkill
+iproute2                    the entry point reads the state of the network interfaces
+libusb-1.0-0                library behind the USB interface of core
+libx11-6                    library the keyboard and scanner handler of core loads when it is imported
+build-essential             compiler for the Python packages that ship as source
+ca-certificates             public authorities for verified connections
+openssl                     the entry point generates the certificate of the web server
+locales                     the locale the image sets
+
+curl                        lets a developer call the box from inside the container, which has no network by default

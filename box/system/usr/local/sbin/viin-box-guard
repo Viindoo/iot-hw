@@ -1,0 +1,323 @@
+#!/usr/bin/python3 -I
+"""Roll-back guard of a Viindoo IoT Box: undoes an update the box does not start with.
+
+The software of a box lives in two git trees. An update moves both, after it
+wrote down the pair of commits to go back to. Until that software has marked
+the release good, the guard counts the starts of the box service: at the third
+it puts both trees back and records the release as bad, so that the box never
+moves to it again. A move that was cut short is undone at once and counts for
+nothing. Nothing here comes from either tree - the guard needs the Python of
+the system and git - so that it works when the software of the box does not.
+
+    viin-box-guard               before a start of the box service
+    viin-box-guard --stopped     after the box service stopped
+    viin-box-guard --watch ID    by the timer armed at the start ID: start the service
+                                 again when the release is still not marked good
+    viin-box-guard --check       say whether this file can run at all
+"""
+import contextlib
+import fcntl
+import json
+import os
+import pwd
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+BOX_USER = 'pi'
+# The file the software of the box keeps about its releases. Its record `trial` is the whole contract between
+# that software and this guard, across releases: `phase`, `starts`, `trees`, `previous`, `target`. The guard
+# keeps three keys of its own in it: `start`, the name of the start it counted last, `watched` and `stopped_at`.
+STATE_FILE = 'viin-box-state.json'
+# The box software and this guard both read, change and write the state file, each in its own process. Each
+# takes this lock for the whole of it, so that neither writes back a copy the other has made stale. It lives
+# in memory (/tmp is a RAM disk on a box): it needs neither the card open nor a directory of the box user.
+# The same path is named by the box software.
+LOCK_FILE = '/tmp/viin-box-state.lock'
+LOCK_WAIT = 120
+APPLYING, APPLIED = 'applying', 'applied'
+MAX_STARTS = 3
+# Longer than the software needs to start and to run the two minutes after which it marks a release good.
+WATCH_AFTER = 300
+# A start that follows a clean stop this closely is the second half of a restart somebody asked for.
+RESTART_WITHIN = 30
+SERVICE = 'odoo.service'
+APPLY_SCRIPT = 'box/system/apply.sh'
+# The card of a box is read-only; the second path leads to it under the directories that live in memory.
+CARD = ('/', '/root_bypass_ramdisks')
+PRINTERS = '/root_bypass_ramdisks/etc/cups'
+TIMEOUT = 600
+COMMIT = re.compile(r'[0-9a-f]{40}')
+
+
+def log(message):
+    print(f'viin-box-guard: {message}', file=sys.stderr, flush=True)
+
+
+def state_path():
+    try:
+        home = pwd.getpwnam(BOX_USER).pw_dir
+    except KeyError:
+        home = f'/home/{BOX_USER}'
+    return Path(home, STATE_FILE)
+
+
+def open_lock_file():
+    """A descriptor of the lock file, created when absent.
+
+    An existing file is opened without O_CREAT: with `fs.protected_regular` set, opening a file of another
+    user with O_CREAT in a sticky directory is refused even to root. A file that appears meanwhile is opened.
+    """
+    flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC
+    for _attempt in range(3):
+        try:
+            return os.open(LOCK_FILE, flags)
+        except FileNotFoundError:
+            pass
+        try:
+            return os.open(LOCK_FILE, flags | os.O_CREAT | os.O_EXCL, 0o660)
+        except FileExistsError:
+            pass
+    return os.open(LOCK_FILE, flags)
+
+
+@contextlib.contextmanager
+def state_lock():
+    """Hold the lock on the state file for the block; give up with TimeoutError after LOCK_WAIT seconds.
+
+    Take it before the card is opened. Never run a command under it that starts or stops the box service:
+    that calls this file again, which would wait on the lock for good.
+    """
+    descriptor = open_lock_file()
+    try:
+        if os.geteuid() == 0:
+            owner = os.stat(state_path().parent)
+            os.fchown(descriptor, owner.st_uid, owner.st_gid)
+        deadline = time.monotonic() + LOCK_WAIT
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('the state file is held by another process') from None
+                time.sleep(0.1)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def read_state():
+    try:
+        state = json.loads(state_path().read_bytes().decode())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as error:
+        log(f'the state file cannot be read ({type(error).__name__}): nothing is counted')
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def write_state(state):
+    path = state_path()
+    staged = path.with_name(path.name + '.guard')
+    with open(staged, 'w', encoding='utf-8') as file:
+        json.dump(state, file, indent=1, sort_keys=True)
+        file.write('\n')
+        file.flush()
+        os.fsync(file.fileno())
+        if os.geteuid() == 0:
+            # The file stays the one of the box user, whose software writes it too.
+            owner = os.stat(path if path.exists() else path.parent)
+            os.fchown(file.fileno(), owner.st_uid, owner.st_gid)
+    os.replace(staged, path)
+
+
+def as_root(*command):
+    prefix = [] if os.geteuid() == 0 else ['sudo', '-n']
+    return subprocess.run([*prefix, *command], capture_output=True, check=False, timeout=TIMEOUT)
+
+
+def read_only(mount_point):
+    answer = False
+    with contextlib.suppress(OSError):
+        for line in Path('/proc/mounts').read_text().splitlines():
+            fields = line.split()
+            if len(fields) > 3 and fields[1] == mount_point:
+                answer = 'ro' in fields[3].split(',')
+    return answer
+
+
+@contextlib.contextmanager
+def card_open():
+    """Make the card writable for the block, and leave it as it was found."""
+    closed = [point for point in CARD if read_only(point)]
+    for point in closed:
+        as_root('mount', '-o', 'remount,rw', point)
+    try:
+        yield
+    finally:
+        for point in closed:
+            as_root('mount', '-o', 'remount,ro', point)
+        # Closing the card closes the directory of the print server with it, which must stay writable.
+        if closed and os.path.ismount(PRINTERS):
+            as_root('mount', '-o', 'remount,rw', PRINTERS)
+
+
+def git(tree, *arguments):
+    """Run git on `tree` as the user the tree belongs to: git refuses the tree of somebody else."""
+    command = ['git', '-C', tree, *arguments]
+    owner = os.stat(tree).st_uid
+    if os.geteuid() == 0 and owner != 0:
+        command = ['runuser', '-u', pwd.getpwuid(owner).pw_name, '--', *command]
+    subprocess.run(command, capture_output=True, check=True, timeout=TIMEOUT,
+                   env=dict(os.environ, GIT_TERMINAL_PROMPT='0', LC_ALL='C'))
+
+
+def put_back(trial):
+    """Put both trees at the pair the box ran before, and install the system files of that release."""
+    trees, previous = trial.get('trees'), trial.get('previous')
+    moves = [(trees['core'], previous['odoo_commit']), (trees['layer'], previous['layer_commit'])]
+    for tree, commit in moves:
+        if not (isinstance(tree, str) and os.path.isabs(tree) and isinstance(commit, str) and COMMIT.fullmatch(commit)):
+            raise ValueError('the state file names no pair to go back to')
+    for tree, commit in moves:
+        # A git command the power cut off left its lock files, and git refuses to write beside one for ever.
+        repository = Path(tree, '.git')
+        for lock in (*repository.glob('*.lock'), *repository.glob('refs/**/*.lock')):
+            with contextlib.suppress(OSError):
+                lock.unlink()
+        git(tree, 'reset', '--hard', '--quiet', commit)
+    installed = as_root('bash', os.path.join(trees['layer'], APPLY_SCRIPT))
+    if installed.returncode:
+        log('the trees are back, but the system files of that release could not be installed again')
+
+
+def now():
+    return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+
+
+def arm_watch(start):
+    """Have the system run `--watch` later.
+
+    A release that neither fails nor is marked good - the box service runs
+    without the Viindoo layer when that layer cannot be loaded - would
+    otherwise stay until somebody switches the box off and on.
+    """
+    if not os.path.isdir('/run/systemd/system'):
+        return
+    armed = as_root(
+        'systemd-run', '--quiet', '--collect', f'--uid={os.getuid()}', f'--on-active={WATCH_AFTER}',
+        '--timer-property=AccuracySec=1s', '--description=Viindoo IoT Box: look at the release on trial',
+        os.path.abspath(__file__), '--watch', start)
+    if armed.returncode:
+        log('the watch on the release on trial could not be armed')
+
+
+def undo(state, trial, starts):
+    """Go back for good: the release is recorded as bad, under the commit of the layer that names it."""
+    target = trial.get('target') if isinstance(trial.get('target'), dict) else {}
+    put_back(trial)
+    undone = {key: target.get(key, '') for key in ('release', 'layer_commit', 'odoo_commit')}
+    undone.update(at=now(), starts=starts)
+    if isinstance(undone['layer_commit'], str) and undone['layer_commit']:
+        bad = state.get('bad') if isinstance(state.get('bad'), dict) else {}
+        bad[undone['layer_commit']] = {key: undone[key] for key in ('release', 'odoo_commit', 'at')}
+        state['bad'] = bad
+    state.update(rolled_back=undone, trial=None)
+
+
+def before_start():
+    start = ''
+    with state_lock():
+        state = read_state()
+        trial = state.get('trial')
+        if not isinstance(trial, dict):
+            return
+        release = (trial.get('target') or {}).get('release', '?') if isinstance(trial.get('target'), dict) else '?'
+        with card_open():
+            try:
+                if trial.get('phase') == APPLYING:
+                    put_back(trial)
+                    state['trial'] = None
+                    log(f'the move to release {release} was cut short: the box goes back to the release it ran')
+                elif trial.get('phase') == APPLIED:
+                    starts = int(trial.get('starts') or 0) + 1 - asked_restart(trial)
+                    trial.update(starts=starts, watched=False, stopped_at=None)
+                    if starts >= MAX_STARTS:
+                        undo(state, trial, starts)
+                        log(f'release {release} was not marked good in {MAX_STARTS - 1} starts: '
+                            'the box goes back to the release it ran and will not move to that one again')
+                    else:
+                        start = trial['start'] = os.urandom(8).hex()
+                        log(f'release {release} is on trial: start {starts}')
+            except (OSError, subprocess.SubprocessError, LookupError, TypeError, ValueError) as error:
+                start = ''
+                log(f'the box could not be put back to the release it ran ({type(error).__name__}: {error})')
+            write_state(state)
+    if start:
+        arm_watch(start)
+
+
+def stopped():
+    """Remember a stop that left no failure behind: when a start follows at once, somebody asked for a restart.
+
+    The start script of a box restarts the box service once at each boot. A
+    stop the watch asked for ends a start that failed, and is not remembered.
+    """
+    with state_lock():
+        state = read_state()
+        trial = state.get('trial')
+        if (not isinstance(trial, dict) or trial.get('phase') != APPLIED
+                or os.environ.get('SERVICE_RESULT') != 'success'):
+            return
+        trial.update(watched=False, stopped_at=None if trial.get('watched') else time.monotonic())
+        with card_open():
+            write_state(state)
+
+
+def asked_restart(trial):
+    """1 when the start now beginning takes the place of the last one counted, which then counts for nothing."""
+    stopped_at = trial.get('stopped_at')
+    if not isinstance(stopped_at, (int, float)) or int(trial.get('starts') or 0) < 1:
+        return 0
+    return int(0 <= time.monotonic() - stopped_at < RESTART_WITHIN)
+
+
+def watch(start):
+    with state_lock():
+        state = read_state()
+        trial = state.get('trial')
+        if not isinstance(trial, dict) or trial.get('phase') != APPLIED or not start or trial.get('start') != start:
+            return
+        log(f'the release on trial is not marked good {WATCH_AFTER} seconds after its start: '
+            'the box service is started again')
+        trial['watched'] = True
+        with card_open():
+            write_state(state)
+    # The restart calls this file again, before and after the service: it must not find the lock held.
+    as_root('systemctl', 'restart', SERVICE)
+
+
+def main(arguments):
+    if arguments[:1] == ['--check']:
+        read_state()
+        print('ok')
+        return 0
+    # Whatever goes wrong here, the box service starts.
+    try:
+        if arguments[:1] == ['--watch'] and len(arguments) == 2:
+            watch(arguments[1])
+        elif arguments == ['--stopped']:
+            stopped()
+        else:
+            before_start()
+    except Exception as error:
+        log(f'stopped ({type(error).__name__}: {error})')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

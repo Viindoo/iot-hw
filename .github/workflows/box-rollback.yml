@@ -1,0 +1,209 @@
+# Points the release channel of a series back at an earlier supported release.
+#
+# Boxes follow refs/heads/box-release/<series> and apply what it names like any release, backward included, so
+# moving it back is how a bad release is taken away from the boxes. Start this workflow from the series branch
+# (Run workflow, branch <series>) and give the tag of the earlier supported release to return to.
+#   gate   the checker of the series branch reads the tag; the tag must be a supported release, earlier than
+#          the release the channel names now, and its release page must exist and not be withdrawn
+#   move   in the environment box-release (the owner approves): withdraws the page of the release the channel
+#          names now (a pre-release titled WITHDRAWN; its files stay, customers have checked them), then pushes
+#          the channel back to the tagged commit with the deploy key, only if the channel still is where the
+#          gate saw it
+#   pages  marks the page of the returned release as the latest one
+# The page is withdrawn before the channel moves, because box-image.yml advances the channel only to a release
+# whose page is not withdrawn: a run of advance started again for the bad release between the two steps would
+# otherwise move the channel forward to it. Doing it in move needs no further approval or group (a job in the
+# group box-release-<series> that waits can be replaced by a newer one, so pages could be lost), and adds
+# nothing to what the deploy key of that job can already do. "Re-run failed jobs" finishes whichever of move
+# and pages failed. A published release or tag is never changed;
+# a later fix is a new release.
+name: box-rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'The tag of the earlier supported release to return to, box-<series>-<release>'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: What the channel may go back to
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      series: ${{ steps.facts.outputs.series }}
+      target: ${{ steps.facts.outputs.target }}
+      head: ${{ steps.facts.outputs.head }}
+      previous: ${{ steps.facts.outputs.previous }}
+    steps:
+      - name: The tag name
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -o errexit -o nounset -o pipefail
+          if [[ ! "$TAG" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::the tag holds a character a tag name of this repository does not use"
+            exit 1
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read the tag and the release page
+        id: facts
+        env:
+          TAG: ${{ inputs.tag }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -o errexit -o nounset -o pipefail
+          if [[ ! "$TAG" =~ ^box-([0-9]+\.[0-9]+)-[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::$TAG is not a tag of the form box-<series>-<release>"
+            exit 1
+          fi
+          series="${BASH_REMATCH[1]}"
+          if [ "$REF_TYPE" != branch ] || [ "$REF_NAME" != "$series" ]; then
+            echo "::error::start this workflow from the branch ${series}, not from ${REF_TYPE} ${REF_NAME}"
+            exit 1
+          fi
+          bash box/build/check_release.sh tag "$TAG" --series-ref "origin/${series}" --repository "$PWD" \
+            > "$RUNNER_TEMP/facts.raw"
+          if ! grep --quiet --line-regexp 'mode=supported' "$RUNNER_TEMP/facts.raw"; then
+            echo "::error::$TAG is not a supported release"
+            exit 1
+          fi
+          target="$(sed -n 's/^layer_commit=//p' "$RUNNER_TEMP/facts.raw")"
+          if [[ ! "$target" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::the checker gave no commit for $TAG"
+            exit 1
+          fi
+          channel="refs/heads/box-release/${series}"
+          # The checkout above fetched every branch, the channel among them.
+          if ! head="$(git rev-parse --verify --quiet "refs/remotes/origin/box-release/${series}")"; then
+            echo "::error::the release channel ${channel} does not exist: there is nothing to go back from"
+            exit 1
+          fi
+          if [ "$head" = "$target" ]; then
+            echo "::error::the release channel is at $TAG already"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$target" "$head"; then
+            echo "::error::$TAG is not an earlier release of the channel: its commit is not in the history of the channel head $head"
+            exit 1
+          fi
+          if ! page="$(gh release view "$TAG" --json name,isPrerelease,isDraft --jq '[.name, (.isPrerelease or .isDraft | tostring)] | join("|")')"; then
+            echo "::error::the release page of $TAG could not be read"
+            exit 1
+          fi
+          if [[ "$page" == WITHDRAWN* ]] || [[ "$page" == *"|true" ]]; then
+            echo "::error::the release page of $TAG is withdrawn, a pre-release or a draft: a box is not sent back to it"
+            exit 1
+          fi
+          # The supported releases the channel names now; their pages are withdrawn after the channel has moved.
+          previous="$(git tag --list "box-${series}-*" --points-at "$head" | grep --invert-match --extended-regexp -- '-rc\.[0-9]+$' | tr '\n' ' ' || true)"
+          {
+            echo "series=${series}"
+            echo "target=${target}"
+            echo "head=${head}"
+            echo "previous=${previous% }"
+          } >> "$GITHUB_OUTPUT"
+          echo "The channel goes from ${head} (${previous:-no supported release}) back to ${TAG} (${target})."
+
+  move:
+    name: Move the release channel back
+    needs: gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: box-release
+    concurrency:
+      group: box-release-${{ needs.gate.outputs.series }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.gate.outputs.target }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Withdraw the release pages the channel names now
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PREVIOUS: ${{ needs.gate.outputs.previous }}
+        run: |
+          set -o errexit -o nounset -o pipefail
+          for withdrawn in $PREVIOUS; do
+            if ! title="$(gh release view "$withdrawn" --json name --jq .name 2> "$RUNNER_TEMP/gh-error")"; then
+              if grep --quiet 'release not found' "$RUNNER_TEMP/gh-error"; then
+                echo "$withdrawn has no release page: nothing to withdraw."
+                continue
+              fi
+              echo "::error::the release page of $withdrawn could not be read"
+              exit 1
+            fi
+            case "$title" in
+              WITHDRAWN*) ;;
+              *) title="WITHDRAWN ${title}" ;;
+            esac
+            gh release edit "$withdrawn" --prerelease --title "$title"
+          done
+      - name: Point the channel at the earlier release
+        env:
+          DEPLOY_KEY: ${{ secrets.BOX_RELEASE_DEPLOY_KEY }}
+          REPOSITORY: ${{ github.repository }}
+          SERIES: ${{ needs.gate.outputs.series }}
+          TARGET: ${{ needs.gate.outputs.target }}
+          SEEN_HEAD: ${{ needs.gate.outputs.head }}
+        run: |
+          set -o errexit -o nounset -o pipefail
+          if [ -z "$DEPLOY_KEY" ]; then
+            echo "::error::the environment box-release holds no secret BOX_RELEASE_DEPLOY_KEY"
+            exit 1
+          fi
+          ssh_dir="$RUNNER_TEMP/ssh"
+          install -d -m 700 "$ssh_dir"
+          printf '%s\n' "$DEPLOY_KEY" > "$ssh_dir/key"
+          chmod 600 "$ssh_dir/key"
+          # The ed25519 host key GitHub publishes for ssh.
+          echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$ssh_dir/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $ssh_dir/key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$ssh_dir/known_hosts"
+          url="git@github.com:${REPOSITORY}.git"
+          channel="refs/heads/box-release/${SERIES}"
+          channel_head() {
+            git ls-remote "$url" "$channel" | awk -v ref="$channel" '$2 == ref {print $1}'
+          }
+          if [ "$(channel_head)" != "$TARGET" ]; then
+            git push "$url" --force-with-lease="${channel}:${SEEN_HEAD}" "${TARGET}:${channel}"
+          fi
+          seen="$(channel_head)"
+          if [ "$seen" != "$TARGET" ]; then
+            echo "::error::the release channel shows ${seen:-nothing} after the push, not $TARGET"
+            exit 1
+          fi
+          echo "The release channel ${channel} is at $TARGET."
+      - name: Remove the key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/ssh"
+
+  pages:
+    name: Release pages
+    needs: [gate, move]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Mark the returned release as the latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: gh release edit "$TAG" --latest

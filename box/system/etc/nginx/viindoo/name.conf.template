@@ -1,0 +1,12 @@
+# Viindoo IoT Box: the box under one more name, with the certificate issued for that name.
+# Replace @NAME@ by the name and save the result as /etc/nginx/viindoo/names/<any name>.conf.
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name @NAME@;
+
+    ssl_certificate /etc/ssl/private/viindoo-name/current/fullchain.pem;
+    ssl_certificate_key /etc/ssl/private/viindoo-name/current/privkey.pem;
+
+    include /etc/nginx/viindoo/box.conf;
+}
