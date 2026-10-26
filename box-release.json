@@ -1,5 +1,5 @@
 {
-    "release": "rc.2",
+    "release": "rc.3",
     "series": "18.0",
     "odoo_commit": "b97ec514489271e730726cec8528a2f63b4dcacc",
     "min_image": "24.11",
