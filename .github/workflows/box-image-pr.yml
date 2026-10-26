@@ -1,0 +1,106 @@
+# Builds the image of a box on a pull request, the way box-image.yml builds it for a tag, and publishes nothing.
+#
+# A tag is the only thing that makes an image, and a tag cannot be taken back: a flaw that only the image
+# build shows (the image script of core, the installer inside the image, the checks of what went in, the
+# compression and its size limit) would cost one release number per attempt. This file runs the same
+# box/build/build_image.sh on the pull request instead, with the same arguments, so that path has run before a tag
+# is cut.
+#
+# What differs from box-image.yml, and why:
+#   - The tag exists only in the checkout of the runner, on the commit under test, named from the pointer
+#     (box-<series>-<release>); it is never pushed.
+#   - A candidate pointer builds as a candidate. A pointer that is not a candidate builds as the supported image it
+#     names: the commit under test stands for the series branch, because a pull request is not merged yet. That
+#     only gives the script a branch to look at; the checker applies its rules to a real tag unchanged, and the
+#     tag flow of box-image.yml still reads it with the checker of the series branch.
+#   - No environment, no secret, read-only permissions. Nothing reaches a release page or a branch; the files
+#     are kept for a few days as a workflow artifact so that an image can be tried.
+#   - It is not part of box-checks.yml and is not a required status check.
+#
+# The paths below are everything build_image.sh reads: its own directory, the installer it copies into the
+# image, the system files the installer applies there, the pointer it takes the core commit and the release from,
+# and the two workflows that run it.
+name: box-image-pr
+
+on:
+  pull_request:
+    paths:
+      - 'box/build/**'
+      - 'box/install/**'
+      - 'box/system/**'
+      - 'box-release.json'
+      - '.github/workflows/box-image.yml'
+      - '.github/workflows/box-image-pr.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: box-image-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build the image without publishing it
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Which release the pointer names
+        id: facts
+        run: |
+          set -o errexit -o nounset -o pipefail
+          bash box/build/check_release.sh pointer > "$RUNNER_TEMP/pointer.facts"
+          cat "$RUNNER_TEMP/pointer.facts"
+          series="$(sed -n 's/^series=//p' "$RUNNER_TEMP/pointer.facts")"
+          release="$(sed -n 's/^release=//p' "$RUNNER_TEMP/pointer.facts")"
+          candidate="$(sed -n 's/^candidate=//p' "$RUNNER_TEMP/pointer.facts")"
+          commit="$(git rev-parse HEAD)"
+          # Only the tag of this runner: the same name a real tag of this release has, on the commit under test.
+          git tag --force "box-${series}-${release}" "$commit"
+          {
+            echo "tag=box-${series}-${release}"
+            echo "commit=$commit"
+            if [ "$candidate" = true ]; then
+              echo "mode=candidate"
+            else
+              echo "mode=supported"
+            fi
+          } >> "$GITHUB_OUTPUT"
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends qemu-user-static binfmt-support kpartx zerofree xz-utils rsync fdisk wget
+      - name: A unit the image script of core reloads
+        run: |
+          printf '[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/true\nExecReload=/bin/true\n' \
+            | sudo tee /run/systemd/system/NetworkManager.service > /dev/null
+          sudo systemctl daemon-reload
+          sudo systemctl start NetworkManager.service
+      - name: Build
+        env:
+          TAG: ${{ steps.facts.outputs.tag }}
+          MODE: ${{ steps.facts.outputs.mode }}
+          COMMIT: ${{ steps.facts.outputs.commit }}
+        run: |
+          set -o errexit -o nounset -o pipefail
+          series_ref=()
+          if [ "$MODE" = supported ]; then
+            series_ref=(--series-ref "$COMMIT")
+          fi
+          sudo bash box/build/build_image.sh --tag "$TAG" "${series_ref[@]}" --expect-mode "$MODE" \
+            --expect-commit "$COMMIT" --work "$RUNNER_TEMP/work" --output "$RUNNER_TEMP/out"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: box-image-pr
+          path: ${{ runner.temp }}/out/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3

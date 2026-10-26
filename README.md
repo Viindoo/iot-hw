@@ -120,6 +120,14 @@ pointer rules, the unit of the box service as systemd reads it, the box suite in
 check against the core commit the pointer names. A change of `box-release.json` therefore cannot reach a box
 before the seams of the layer have been checked against the core it names.
 
+`box-image-pr.yml` builds the image on a pull request that changes what goes into one (`box/build`, `box/install`,
+`box/system`, `box-release.json` or the two image workflows), with the same `box/build/build_image.sh` and the same
+checks of the result, and publishes nothing: the tag it builds from exists only on the runner, there is no
+environment and no secret, and the files stay as a workflow artifact for three days. A pointer that is not a
+candidate builds as the supported image it names, with the commit under test standing for the series branch;
+the rules `check_release.sh` applies to a real tag are not changed by that. The workflow is not a required
+status check, so a pull request can be merged while it runs; read its result before cutting a tag.
+
 What this does and does not stop. A run for a tag uses the workflow file of the tagged commit, and anyone who can
 write to the repository can make a release page by hand. The checker taken from the series branch stops
 mistakes; the environment and the rulesets below stop a single actor; the release channel is what customers'
