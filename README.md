@@ -14,21 +14,272 @@ to a card.
 | `box/dev/softbox` | The software box: the real box code in a container, for development and for the checks |
 | `.github/workflows` | The checks of every change, the build and publication of a release, and the roll-back of the release channel |
 
-## Get a box (customers and their IT staff)
+## Contents
 
-Open the releases of this repository and take the latest release of your series (the title names it, for
-example "Viindoo IoT Box 18.0 ..."). Download the `.img.xz` file and `SHA256SUMS` into one folder and check
-the file there:
+- [Set up a box from zero](#set-up-a-box-from-zero-customers-and-their-it-staff) - the guide for a first-time user on Ubuntu 26.04
+- [Build an image](#build-an-image)
+- [Install the layer on a stock Raspberry Pi OS](#install-the-layer-on-a-stock-raspberry-pi-os)
+- [Publish a release](#publish-a-release)
+- [Roll back a release](#roll-back-a-release)
+- [Development](#development)
+- [Public repository](#public-repository)
 
-- Linux: `sha256sum --check SHA256SUMS`
-- macOS: `shasum -a 256 --check SHA256SUMS`
-- Windows: `certutil -hashfile <file> SHA256`, then compare the hash it prints with the one beside the file
-  name in `SHA256SUMS` (Windows has no option that does the comparison).
+## Set up a box from zero (customers and their IT staff)
 
-On Linux and macOS the answer is `<file>: OK`. Then write the image with Raspberry Pi Imager: "Use custom",
-without OS customisation. `manifest.txt`, on the same page, is not needed for this. Releases marked
-CANDIDATE and flagged as pre-releases are test builds for Viindoo's own box; never write one to a box that
-serves a customer.
+This guide assumes you have never done this. You sit at a computer running a fresh Ubuntu 26.04 desktop, with a
+Raspberry Pi board in hand. You end with a Viindoo IoT Box on your network, paired with your Viindoo server, with
+its devices listed there. Do the parts in order; each step says what you should see afterwards. If it does not
+happen, go to [When something goes wrong](#9-when-something-goes-wrong).
+
+Every screen text in quotes is the text the box page or the Viindoo screen shows (English; the box page also
+speaks Vietnamese, with buttons at its top). The same path, with screenshots, is in the user documentation:
+[Set up and manage IoT boxes](https://viindoo.com/documentation/18.0/applications/internet-of-things/manage-iot-box.html).
+This README gives the short version and the command lines; the documentation holds the long lists (every
+self-test line, every message).
+
+> **State on 2026-10-26.** Release pages exist for test candidates only: `box-18.0-rc.3`, a pre-release marked
+> CANDIDATE, which is for Viindoo's own test box. No supported release has been published yet. Until one
+> appears, a customer cannot finish part 2; ask Viindoo support (apps.support@viindoo.com) when it will. Look at
+> [the releases](https://github.com/Viindoo/iot-hw/releases) for the current state: this paragraph is the only
+> dated one in this guide, and the rest of the guide always says "the latest release of your series".
+
+### 1. What you need
+
+| You need | Notes |
+|---|---|
+| A Raspberry Pi board | The image is built on Raspberry Pi OS Lite, 32-bit (bookworm), and installs libraries that only a Raspberry Pi board has. This repository does not list board models and the build does not check one; before you buy, ask Viindoo support (apps.support@viindoo.com) which board to take. |
+| The power supply of the board | The one made for your board model. |
+| A microSD card of 8 GB or more | The image is about 5 GB once written. The sources name no speed class: take a card from a known maker. Writing erases everything on it. |
+| A way to plug the card into your computer | A microSD slot, or a USB card reader (an SD slot works with a microSD-to-SD adapter). |
+| A network | A cable to a router that hands out addresses (DHCP) is the simplest. Wi-Fi also works (see part 4). The network must let the box reach your Viindoo server, and the box needs internet access to update itself. |
+| Your Viindoo server | Viindoo Cloud, or your own Viindoo server, with the Internet Of Things app (`viin_iot`). A person with the access right **IoT Box Creator** or **Administrator** of that app does part 5. |
+| Optional | An HDMI screen or a USB receipt printer: the box shows or prints its network address on them. Printers, scanners, scales, footswitches and screens come later; [the documentation lists](https://viindoo.com/documentation/18.0/applications/internet-of-things/manage-iot-box/prepare-hardware-and-network.html) which kinds the box drives and how to connect each. |
+| About 2 GB of free disk space on your computer | For the download. The compressed image is about 1.2 GB for the candidate listed today; the build refuses a file of 2 GiB or more. |
+
+### 2. Install the tools on Ubuntu 26.04
+
+Open a terminal (press `Ctrl+Alt+T`).
+
+1. Install Raspberry Pi Imager, the program that writes the card:
+
+       sudo apt update
+       sudo apt install rpi-imager
+
+   On Ubuntu 26.04 the package `rpi-imager` is in the `universe` component (version 1.8.5 when this was written),
+   which a desktop installation has enabled. You should end with no error, and "Raspberry Pi Imager" appears in the
+   application list.
+2. Checking the download needs `sha256sum`, which Ubuntu already has. Nothing to install.
+3. Optional, to download from the terminal instead of the browser: `sudo apt install gh`. Downloading a public
+   release needs no GitHub account.
+
+If you cannot use Imager, part 3 has a command-line way to write the card.
+
+### 3. Download, check and write the image
+
+**Find the release.** Open [the releases of this repository](https://github.com/Viindoo/iot-hw/releases).
+
+- Your series is the first part of the version of your Viindoo database (in Viindoo: **Settings > General
+  Settings**, the *About* block), for example `18.0`.
+- Take the **latest release of your series** that is **not** marked *Pre-release*. Its title is
+  "Viindoo IoT Box `<series>` `<release>`" and its image file is `viindoo-iot-box-<series>-<release>.img.xz`. The
+  most recent release on the page may belong to another series; read the title.
+- A release marked **CANDIDATE** and flagged *Pre-release* (file name ending `-CANDIDATE.img.xz`) is a test build
+  for Viindoo's own test box. Never write it to a box that serves a customer. A box written from a candidate
+  follows a test channel of its own and takes test builds only.
+
+**Download two files** from that release page into one folder, say `~/Downloads`: the `.img.xz` file and
+`SHA256SUMS`. `manifest.txt` is not needed. Do not unpack the `.img.xz` file. From the terminal instead (replace the
+tag with the one on the page; `gh release list -R Viindoo/iot-hw --exclude-pre-releases` lists the supported
+releases):
+
+    cd ~/Downloads
+    gh release download box-<series>-<release> -R Viindoo/iot-hw --pattern '*.img.xz' --pattern SHA256SUMS
+
+**Check the file.**
+
+    cd ~/Downloads
+    sha256sum --check SHA256SUMS
+
+You should see `viindoo-iot-box-<series>-<release>.img.xz: OK`. If it says `FAILED`, the download is damaged or
+incomplete: download it again. Do not write a file that does not say `OK`.
+
+(On another computer: macOS `shasum -a 256 --check SHA256SUMS`; Windows `certutil -hashfile <file> SHA256`, then
+compare the hash it prints with the one beside the file name in `SHA256SUMS`, because Windows has no option that
+compares them.)
+
+**Write the card with Raspberry Pi Imager.** Put the card in the slot or the reader, then:
+
+1. Open "Raspberry Pi Imager" from the application list (or run `rpi-imager` in the terminal).
+2. If it shows "CHOOSE DEVICE" ("Raspberry Pi Device"), choose your board model if it is listed. The image of this
+   box is not in the list Imager offers: you pick it from your computer in the next step.
+3. Click "CHOOSE OS", scroll to the end of the list and choose "Use custom" ("Select a custom .img from your
+   computer") and pick the `.img.xz` file.
+4. Click "CHOOSE STORAGE" and choose your card. Check its size against the card you hold: Imager will erase whatever
+   you choose. Choosing your computer's own disk by mistake destroys your data.
+5. Click "Next". Imager asks "Would you like to apply OS customization settings?". Answer "NO" ("NO, CLEAR
+   SETTINGS" if it shows that instead). The box makes its own host name, password and certificate at first start;
+   the settings of Imager must not touch the card.
+6. Imager says "All existing data on '<card>' will be erased. Are you sure you want to continue?". Choose "YES".
+7. Wait for "Write Successful", then take the card out. If Ubuntu offers to format a partition of the card, cancel:
+   the card is ready as it is.
+
+**Without Imager (command line).** Be certain of the device: `dd` overwrites whatever it is pointed at without asking.
+
+    lsblk -o NAME,SIZE,MODEL,TRAN,RM,MOUNTPOINTS
+
+Find the card by its size and by `RM` = 1 (removable). It is `/dev/sdX` for a USB reader or `/dev/mmcblkN` for the
+built-in slot; your system disk (usually `/dev/nvme0n1` or `/dev/sda` with `MOUNTPOINTS` such as `/`) is never the
+card. Unplug the card and run `lsblk` again if in doubt: the device that disappears is the card. Unmount its
+partitions (`sudo umount <mountpoint>` for each mount point `lsblk` shows on it), then write, replacing `/dev/sdX`
+with your card (without a partition number):
+
+    CARD=/dev/sdX
+    xz --decompress --stdout viindoo-iot-box-<series>-<release>.img.xz | sudo dd of="$CARD" bs=4M conv=fsync status=progress
+    sync
+
+When the prompt returns, the card is written.
+
+### 4. Start the box and connect it to your network
+
+When the box starts for the first time it gives itself a master password of its own (random, shown nowhere) and a
+host name `viindoo-iot-<last 4 characters of the serial number of the board>` (for example `viindoo-iot-1a2b`; the
+host name never changes afterwards), makes its own certificate, and announces its page on the local network. While
+the box software starts, every address of the box shows the page "The box is not ready yet", which checks again by
+itself and opens the box page when the box answers. The sources give no start-up time; if nothing changes after 15
+minutes, unplug the power supply, wait ten seconds and plug it in again.
+
+**With a network cable (preferred).**
+
+1. Put the card in the board, plug in the network cable, then the power supply.
+2. Find the address of the box. Any one of these:
+   - an HDMI screen shows the identification page, with the line "To set up this box, open http://`<address>` in a
+     browser on the same network.";
+   - a USB receipt printer prints a ticket titled "Viindoo IoT Box" with the IP address and a `Homepage:` line;
+   - your router's list of devices shows the host name `viindoo-iot-xxxx`;
+   - `http://viindoo-iot-xxxx.local` (the host name from the box), from a computer on the same network segment. It
+     does not work across routers, on a guest network that isolates clients, or through a VPN.
+3. On your computer, open `http://<address>` in a browser. You should see the box page: from top to bottom
+   "Self-test", "Server", "Network", "Devices", "Software" and "Advanced". The "Network" section says "Wired
+   network". The "Server" section says "The box is not connected to a server."
+
+**With Wi-Fi.** When the box starts with no cable and no Wi-Fi network it can join, it opens its own Wi-Fi network,
+which has no password, named `Viindoo-IoT-` followed by the hardware address of its Wi-Fi without colons
+(for example `Viindoo-IoT-b827eb1234ab`). It does so at start when it cannot join a network, and
+after ten minutes without any address while it runs; wait up to ten minutes before you decide it is missing.
+
+1. On Ubuntu, open the network menu at the top right, choose the Wi-Fi network `Viindoo-IoT-...` and connect. Ubuntu
+   may say there is no internet: that is right.
+2. Open `http://10.11.12.1`. The "Network" section says "Own Wi-Fi network of the box".
+3. Click "Wi-Fi". Under "Name of the Wi-Fi network" choose yours from the list, or type its name (a hidden network is
+   not listed: type it exactly). Under "Password (leave empty for a network without one)" type its password.
+   Networks that ask for a user name as well (802.1X) cannot be joined.
+4. Keep "Keep this network after a restart" ticked, then click "Join the network".
+5. The page says "The box is joining `<name>`." and loses contact with the box. Connect your computer back to the same
+   network the box joined, wait a minute, and open the box by the name the page shows
+   (`http://<host name>.local`) or by the address it has on that network (find it as in the cable steps).
+   A wrong password is not reported on the page: the box goes back to its previous network, or opens
+   `Viindoo-IoT-...` again; join that and retry.
+
+The box page can be reached on port 80 (`http://`), 443 (`https://`, with a certificate your browser warns about
+until you accept it once) and 8069.
+
+### 5. Pair the box with your Viindoo server
+
+Pairing links this box to one Viindoo database with a code that works once and for 15 minutes.
+
+**In Viindoo** (a user with **IoT Box Creator** or **Administrator** of the Internet Of Things app; give the right
+under **Settings > Users & Companies > Users**, tab **Access Rights**, *Internet of Things (IoT)*; install the app
+from **Apps** by searching `Internet Of Things` and clicking **Activate**):
+
+1. Open Viindoo with the address the box can reach (the pairing link carries the address you use).
+2. Open **IoT > Overview** and click **Connect an IoT Box**. In a database with several companies, first choose the
+   **Company** the box belongs to.
+3. Click **Generate Pairing Code**. The "Pairing Code" window shows the **Pairing Code** (12 characters), the
+   **Pairing Link** and **Valid Until**. It is shown only now. Keep the window open.
+
+**On the box page:**
+
+4. In the "Server" section click "Connect". The "Connect the box to a server" window opens.
+5. With "Pairing link" selected, paste the whole link, including the part after `#`. Or choose "Address and code" and
+   type "Address of the server" (the address you open Viindoo with, for example `https://erp.example.com`) and "Pairing
+   code".
+6. Click "Connect". The box restarts ("The box is connected and restarts to finish."); do not switch it off. The page
+   comes back by itself and says "Connected to `<server>` as `<name>`." The "Server" section then shows "Registered".
+7. Back in Viindoo, click **Done** in the Pairing Code window.
+
+If the address starts with `http:` the window warns that the exchange is not encrypted: use `https` when the server has
+it. If the server's certificate is not issued by a public authority, the window shows its fingerprint: compare it with
+the one your server administrator gives you, and only if they match choose "Trust this certificate and connect".
+
+After pairing, every change on the box page asks for the **settings code** ("Locked: a change asks for the settings
+code that the administrators read on the box record in Viindoo."). An **Administrator** of the app reads it in the
+box record, field **Box Settings Code** in the *Advanced* group. Reading the page needs no code.
+
+### 6. Check that it works
+
+- In Viindoo, **IoT > Overview** shows the box as a card marked **Connected**, in green. Open the card to see **Last
+  Seen**, **Reported Name** (the host name of the box), **Hardware Address**, **IP Address**, **IoT Box Home Page**
+  and **Image Version**. Give it the name your team will use in **Box Name** and save; the box keeps its own host
+  name.
+- **IoT > Devices** lists the devices the box found, grouped by box. The box page's "Devices" section lists the same
+  devices: a plugged-in device appears within seconds, a printer within two minutes.
+- The box page's "Self-test" says "Everything is in order." when nothing needs you; otherwise each line that needs
+  you says "What to do:".
+- Under "Advanced" (click "Show"), "This box" shows "Name of the box" (the host name `viindoo-iot-xxxx`), the
+  hardware address and the serial number.
+
+Next, connect devices and assign them in the apps that use them: see the documentation pages
+[Connect and test devices](https://viindoo.com/documentation/18.0/applications/internet-of-things/manage-iot-box/connect-and-test-devices.html)
+and the integration pages of the IoT documentation.
+
+### 7. Updates
+
+A box follows the release channel of its series, and nothing else. It looks for a new release when it starts, every
+night, and when you click "Look for a new release" in the "Software" section. With "Update automatically" on (the
+default) it applies a new release by itself and restarts; a release that does not start well is undone by the box
+and never tried again. With it off, click "Update to `<release>`". The sentence in "Software" says where the box
+stands, for example "The box software is the latest release.", "A new release is on trial after a restart; the box
+keeps it once it runs well." or, without internet, "The box could not reach the place where releases are published.
+Updates need internet access; devices work without it." A box written from a supported image does not install a
+candidate ("The release that is published is a candidate, which this box does not install."). If the box says "The
+new release needs a newer image of the box than the one on its card.", write a newer image to the card (part 3), then
+pair the box again: in Viindoo open the box and click **Re-pair**, and use the new code on the box page.
+
+### 8. Logs and help
+
+- The box page, "Self-test": "Download diagnostic file" saves one file with the self-test, the configuration and the
+  last log lines, without any password, code or key. Send it to apps.support@viindoo.com.
+- "Advanced": "Box log" opens the live log of the box; "Log levels" chooses how detailed it is and has a switch "Send
+  the log of the box to the server".
+- In Viindoo, **IoT > Reporting > Device Logs** (or **Log IoT Box** on the box) shows what the box sends: its warnings
+  and errors by default.
+- "Password for shell access" (under "Advanced") is for a technician and only when support asks; note it at once, the
+  box does not show it again.
+
+### 9. When something goes wrong
+
+Only the problems the box page and the server report are listed. The documentation lists every message:
+[Troubleshoot IoT boxes](https://viindoo.com/documentation/18.0/applications/internet-of-things/manage-iot-box/troubleshoot-iot-boxes.html).
+
+| What you see | What to do |
+|---|---|
+| `sha256sum` says `FAILED` | The download is damaged or incomplete: download it again. |
+| Imager does not list the card | Take the card out and put it in again, or try another reader. |
+| No `Viindoo-IoT-...` Wi-Fi network | It opens only with no cable and no Wi-Fi it can join, and after ten minutes without an address later on. Wait ten minutes, or plug in a network cable. |
+| The page "The box is not ready yet" stays | Wait 15 minutes, then unplug the power supply, wait ten seconds and plug it in again. |
+| "This page cannot reach the box." | Check that your computer is on the same network as the box and that the box is powered on; the page tries again by itself. |
+| `http://viindoo-iot-xxxx.local` does not open | The name works on the same network segment only. Use the address from the screen, the ticket or the router. |
+| After joining Wi-Fi the page is gone | Join your computer to the same Wi-Fi and open the box by name or address. If `Viindoo-IoT-...` is back, join it and check the name and the password. |
+| "This is not a pairing link." | Paste the whole link, or use "Address and code". |
+| "The server does not know this code.", "This code is too old." or "This code was already used." | Generate a new code in Viindoo and copy it exactly. |
+| "This server does not offer pairing for Viindoo IoT boxes." | The address may be wrong, the Internet Of Things app may not be installed there, or the server serves several databases and none is selected. |
+| "This box is already registered as `<name>`." | In Viindoo open that box, click **Re-pair**, and use that code on the box page. |
+| "The clock of the box is wrong, so secure connections fail." | Choose "Set the clock from the server", or let the box reach a time server (UDP port 123), then connect again. |
+| "The server `<server>` did not answer in time." or "...cannot be reached." | Check the server address, the firewall and the proxy between the box and the server. |
+| The box asks for the settings code and nobody has it | Switch the box off, put its card in a computer, create an empty file named `viindoo-reset` (or `viindoo-reset.txt`) at the top of the partition the computer shows, put the card back and start the box. It forgets its server and its lock; pair it again with a new code (**Re-pair** on its record, or **Connect an IoT Box**). |
+| The box shows **Disconnected** in Viindoo | Open the box page and read the self-test; each line that needs you says what to do. When the box reports again it returns to **Connected** by itself. |
+
+If none of this helps, download the diagnostic file (part 8) and send it to apps.support@viindoo.com.
 
 ## Build an image
 
