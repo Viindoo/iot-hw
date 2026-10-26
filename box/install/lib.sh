@@ -40,6 +40,21 @@ own_box_home() {
     chown "${BOX_USER}:${BOX_USER}" "${BOX_HOME}"
 }
 
+# Hands the trees the box keeps below its home to the box user, when they exist already. Git refuses to work as
+# a user in a repository that belongs to another one ("dubious ownership"), and the image script of core leaves
+# its core tree in that state: it clones the tree as root and, after it handed the tree to the box user inside the
+# image, copies more files over it as root, which gives the directories on the way back to root. The safety
+# check of git stays as it is; the trees go to the user that works in them. A tree that is not there is left to
+# be made by the box user.
+own_box_trees() {
+    local tree
+    for tree in "$@"; do
+        if [ -e "${tree}" ]; then
+            chown -R "${BOX_USER}:${BOX_USER}" "${tree}"
+        fi
+    done
+}
+
 # Puts the core tree at one commit, the way the image script of core builds it (sparse, shallow).
 # An existing tree is kept and moved; a missing one is made.
 pin_core() {

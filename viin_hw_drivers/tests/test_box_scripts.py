@@ -1,5 +1,6 @@
 """The scripts that build and install a box: what they keep out of a public log, what they leave in a configuration."""
 import json
+import os
 import pwd
 import shutil
 import subprocess
@@ -176,8 +177,9 @@ class TestConfigurationOfAnInstalledBox(unittest.TestCase):
 
 
 class TestLayerInstalledInTheHomeOfAnImage(unittest.TestCase):
-    """The image script of core copies its files into the image as root, so the home of the box user can belong
-    to root when the installer runs. The installer still has to leave the layer, core and the home to the box user."""
+    """The image script of core copies its files into the image as root. The installer runs on that image: its home,
+    the core tree and the dotfiles in it can belong to root, and git refuses to work as the box user in a tree that
+    belongs to another user. The installer still has to leave the layer, core and the home to the box user."""
 
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -186,6 +188,7 @@ class TestLayerInstalledInTheHomeOfAnImage(unittest.TestCase):
         releases = box.Releases(self.scratch / 'remotes')
         self.core_remote = releases.core_remote
         self.core_commit = releases.core_commits[0]
+        self.other_core_commit = releases.core_commits[1]
         self.layer_source = self.scratch / 'layer-source'
         shutil.copytree(box.REPOSITORY / 'box', self.layer_source / 'box', ignore=shutil.ignore_patterns('__pycache__'))
         (self.layer_source / 'box-release.json').write_text(box.pointer('1.0', self.core_commit))
@@ -211,6 +214,31 @@ class TestLayerInstalledInTheHomeOfAnImage(unittest.TestCase):
         return subprocess.run(['sudo', '-n', *command], input=stdin, capture_output=True, text=True, check=True,
                               timeout=120)
 
+    def copy_core_tree_as_the_image_script_does(self, whole_tree_belongs_to_root):
+        """The core tree and the dotfiles as the image holds them when the installer starts.
+
+        The image script clones core as root, copies it into the image, hands the tree to the box user inside the
+        image, and then copies a few files over it as root again (`cp -a` of a root-owned tree sets the owner of
+        every directory on the way). With `whole_tree_belongs_to_root` nothing was handed over at all."""
+        tree = self.home / 'odoo'
+        self.sudo('git', '-c', 'safe.directory=*', 'clone', '--quiet', str(self.core_remote), str(tree))
+        self.sudo('git', '-c', 'safe.directory=*', '-C', str(tree), 'reset', '--hard', '--quiet',
+                  self.other_core_commit)
+        if not whole_tree_belongs_to_root:
+            self.sudo('chown', '-R', 'pi:pi', str(tree))
+        self.sudo('install', '--directory', '--owner', 'root', '--group', 'root', str(tree / 'addons'),
+                  str(tree / 'addons' / 'point_of_sale'))
+        self.sudo('install', '--owner', 'root', '--group', 'root', '/dev/null',
+                  str(tree / 'addons' / 'point_of_sale' / '__manifest__.py'))
+        self.sudo('chown', 'root:root', str(tree))
+        for dotfile in ('.bashrc', '.inputrc', '.vimrc', '.xsession'):
+            self.sudo('install', '--owner', 'root', '--group', 'root', '/dev/null', str(self.home / dotfile))
+
+    def copy_layer_tree_of_an_older_install(self):
+        tree = self.home / 'iot-hw'
+        self.sudo('git', '-c', 'safe.directory=*', 'clone', '--quiet', str(self.layer_source), str(tree))
+        self.sudo('chown', 'root:root', str(tree))
+
     def install(self):
         return subprocess.run(
             ['sudo', '-n', 'bash', str(INSTALL_SCRIPT), '--layer-ref', 'start', '--layer-source',
@@ -218,28 +246,68 @@ class TestLayerInstalledInTheHomeOfAnImage(unittest.TestCase):
              '--skip-apt', '--skip-system'],
             capture_output=True, text=True, check=False, timeout=300)
 
-    @staticmethod
-    def head(tree):
-        return subprocess.run(['git', '-c', 'safe.directory=*', '-C', str(tree), 'rev-parse', 'HEAD'],
-                              capture_output=True, text=True, check=True, timeout=60).stdout.strip()
+    def as_box_user(self, *command):
+        return subprocess.run(['sudo', '-n', 'runuser', '-u', 'pi', '--', 'env', f'HOME={self.home}', *command],
+                              capture_output=True, text=True, check=False, timeout=60)
+
+    def head_as_box_user(self, tree):
+        """The commit of `tree` read the way the box software reads it: by git, as the box user, with no exception."""
+        done = self.as_box_user('git', '-C', str(tree), 'rev-parse', 'HEAD')
+        self.assertEqual(done.returncode, 0, f'{tree}: {done.stderr}')
+        return done.stdout.strip()
+
+    def assert_installed_for_the_box_user(self):
+        self.assertEqual(self.head_as_box_user(self.home / 'iot-hw'), self.layer_commit)
+        self.assertEqual(self.head_as_box_user(self.home / 'odoo'), self.core_commit)
+        for tree in ('iot-hw', 'odoo'):
+            for directory, names, files in os.walk(self.home / tree):
+                for name in [*names, *files]:
+                    path = os.path.join(directory, name)
+                    self.assertEqual(os.lstat(path).st_uid, self.box_user.pw_uid, path)
+            self.assertEqual((self.home / tree).stat().st_uid, self.box_user.pw_uid, tree)
+            status = self.as_box_user('git', '-C', str(self.home / tree), 'status', '--short')
+            self.assertEqual(status.returncode, 0, status.stderr)
 
     def test_layer_and_core_are_installed_for_the_box_user_whoever_owns_its_home(self):
         done = self.install()
 
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(self.head(self.home / 'iot-hw'), self.layer_commit)
-        self.assertEqual(self.head(self.home / 'odoo'), self.core_commit)
-        for tree in ('iot-hw', 'odoo'):
-            self.assertEqual((self.home / tree).stat().st_uid, self.box_user.pw_uid, tree)
+        self.assert_installed_for_the_box_user()
+
+    def test_core_tree_the_image_script_copied_over_as_root_is_taken_over_by_the_box_user(self):
+        self.copy_core_tree_as_the_image_script_does(whole_tree_belongs_to_root=False)
+
+        done = self.install()
+
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assert_installed_for_the_box_user()
+
+    def test_core_tree_that_belongs_to_root_through_and_through_is_taken_over_by_the_box_user(self):
+        self.copy_core_tree_as_the_image_script_does(whole_tree_belongs_to_root=True)
+
+        done = self.install()
+
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assert_installed_for_the_box_user()
+
+    def test_layer_tree_of_an_earlier_install_that_belongs_to_root_is_taken_over_by_the_box_user(self):
+        self.copy_core_tree_as_the_image_script_does(whole_tree_belongs_to_root=False)
+        self.copy_layer_tree_of_an_older_install()
+
+        done = self.install()
+
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assert_installed_for_the_box_user()
 
     def test_box_user_can_still_create_its_files_in_its_home_after_the_install(self):
         """The box software stages its state file in the home before it replaces the old one."""
+        self.copy_core_tree_as_the_image_script_does(whole_tree_belongs_to_root=False)
+
         done = self.install()
 
         self.assertEqual(done.returncode, 0, done.stderr)
         staged = self.home / 'viin-box-state.json.new'
-        written = subprocess.run(['sudo', '-n', 'runuser', '-u', 'pi', '--', 'touch', str(staged)],
-                                 capture_output=True, text=True, check=False, timeout=60)
+        written = self.as_box_user('touch', str(staged))
         self.assertEqual(written.returncode, 0, written.stderr)
 
 
