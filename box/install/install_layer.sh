@@ -180,6 +180,7 @@ main() {
     require_root
     id "${BOX_USER}" > /dev/null 2>&1 || fail "the box user ${BOX_USER} does not exist on this system"
     command -v git > /dev/null || fail "git is not installed"
+    own_box_home
     fetch_layer
     facts="$(bash "${layer_tree}/box/build/check_release.sh" pointer "${layer_tree}/box-release.json")" \
         || fail "the box-release.json of ${layer_ref} is not a valid release pointer"
