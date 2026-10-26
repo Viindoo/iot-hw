@@ -31,6 +31,15 @@ as_box_user() {
     runuser -u "${BOX_USER}" -- env "HOME=${BOX_HOME}" "$@"
 }
 
+# Makes sure the home of the box user exists and belongs to it, whatever owned it before. The image script of
+# core copies its files into the image as root, which leaves /home/pi owned by root; the box user could then
+# create neither the trees of the box below it nor, later, the file in which the box software stages its state
+# before it replaces the old one. Only the directory itself changes hands: its mode and what is inside stay.
+own_box_home() {
+    mkdir -p "${BOX_HOME}"
+    chown "${BOX_USER}:${BOX_USER}" "${BOX_HOME}"
+}
+
 # Puts the core tree at one commit, the way the image script of core builds it (sparse, shallow).
 # An existing tree is kept and moved; a missing one is made.
 pin_core() {

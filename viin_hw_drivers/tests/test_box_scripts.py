@@ -1,5 +1,7 @@
 """The scripts that build and install a box: what they keep out of a public log, what they leave in a configuration."""
 import json
+import pwd
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -171,6 +173,74 @@ class TestConfigurationOfAnInstalledBox(unittest.TestCase):
 
         self.assertEqual(in_options.returncode, 0)
         self.assertEqual(elsewhere.returncode, 1)
+
+
+class TestLayerInstalledInTheHomeOfAnImage(unittest.TestCase):
+    """The image script of core copies its files into the image as root, so the home of the box user can belong
+    to root when the installer runs. The installer still has to leave the layer, core and the home to the box user."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.scratch = Path(directory.name)
+        releases = box.Releases(self.scratch / 'remotes')
+        self.core_remote = releases.core_remote
+        self.core_commit = releases.core_commits[0]
+        self.layer_source = self.scratch / 'layer-source'
+        shutil.copytree(box.REPOSITORY / 'box', self.layer_source / 'box', ignore=shutil.ignore_patterns('__pycache__'))
+        (self.layer_source / 'box-release.json').write_text(box.pointer('1.0', self.core_commit))
+        releases.git(self.layer_source, 'init', '--quiet', '--initial-branch=start')
+        releases.git(self.layer_source, 'add', '--all')
+        releases.git(self.layer_source, 'commit', '--quiet', '-m', 'layer')
+        self.layer_commit = releases.git(self.layer_source, 'rev-parse', 'HEAD')
+        self.box_user = pwd.getpwnam('pi')
+        self.home = self.scratch / 'image-home'
+        self.addCleanup(self.sudo, 'rm', '-rf', str(self.home))
+        # The home as the image holds it: owned by root, with the configuration core leaves, owned by the box user.
+        self.sudo('install', '--directory', '--owner', 'root', '--group', 'root', '--mode', '0755', str(self.home))
+        self.sudo('install', '--owner', 'pi', '--group', 'pi', '--mode', '0600', '/dev/null',
+                  str(self.home / 'odoo.conf'))
+        self.sudo('tee', str(self.home / 'odoo.conf'), stdin='[options]\nhttp_port = 8069\n')
+        # The installer locks the password of the box user; the suite needs it back as it was.
+        kept = self.sudo('getent', 'shadow', 'pi').stdout.strip().split(':')[1]
+        self.addCleanup(subprocess.run, ['sudo', '-n', 'usermod', '--password', kept, 'pi'], check=False,
+                        capture_output=True, timeout=30)
+
+    @staticmethod
+    def sudo(*command, stdin=None):
+        return subprocess.run(['sudo', '-n', *command], input=stdin, capture_output=True, text=True, check=True,
+                              timeout=120)
+
+    def install(self):
+        return subprocess.run(
+            ['sudo', '-n', 'bash', str(INSTALL_SCRIPT), '--layer-ref', 'start', '--layer-source',
+             str(self.layer_source), '--core-source', str(self.core_remote), '--home', str(self.home),
+             '--skip-apt', '--skip-system'],
+            capture_output=True, text=True, check=False, timeout=300)
+
+    @staticmethod
+    def head(tree):
+        return subprocess.run(['git', '-c', 'safe.directory=*', '-C', str(tree), 'rev-parse', 'HEAD'],
+                              capture_output=True, text=True, check=True, timeout=60).stdout.strip()
+
+    def test_layer_and_core_are_installed_for_the_box_user_whoever_owns_its_home(self):
+        done = self.install()
+
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.head(self.home / 'iot-hw'), self.layer_commit)
+        self.assertEqual(self.head(self.home / 'odoo'), self.core_commit)
+        for tree in ('iot-hw', 'odoo'):
+            self.assertEqual((self.home / tree).stat().st_uid, self.box_user.pw_uid, tree)
+
+    def test_box_user_can_still_create_its_files_in_its_home_after_the_install(self):
+        """The box software stages its state file in the home before it replaces the old one."""
+        done = self.install()
+
+        self.assertEqual(done.returncode, 0, done.stderr)
+        staged = self.home / 'viin-box-state.json.new'
+        written = subprocess.run(['sudo', '-n', 'runuser', '-u', 'pi', '--', 'touch', str(staged)],
+                                 capture_output=True, text=True, check=False, timeout=60)
+        self.assertEqual(written.returncode, 0, written.stderr)
 
 
 class TestImageBuildRefusesAReleaseTheWorkflowDidNotCheck(unittest.TestCase):

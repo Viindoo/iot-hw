@@ -80,7 +80,7 @@ prepare_system() {
         useradd --create-home --home-dir "${BOX_HOME}" --shell /bin/bash "${BOX_USER}"
         allow_box_user_sudo
     fi
-    install --directory --owner "${BOX_USER}" --group "${BOX_USER}" "${BOX_HOME}"
+    own_box_home
 }
 
 # The files of core's image, in the order its build copies them. The tunnel program core's build
