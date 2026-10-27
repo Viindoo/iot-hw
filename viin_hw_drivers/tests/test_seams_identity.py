@@ -67,15 +67,23 @@ class IdentityCase(common.BoxCase):
 
 class TestReportedAddress(IdentityCase):
 
-    def test_name_the_installer_gave_the_box_is_reported_before_its_viindoo_name(self):
+    def test_name_the_installer_gave_the_box_is_reported_while_the_box_holds_a_viindoo_name(self):
         common.store_box_configuration(viin_box_address=OWN_NAME, viin_managed_name=VIINDOO_NAME)
 
         self.assertEqual(self.reported()['ip'], OWN_NAME)
 
-    def test_viindoo_name_is_reported_when_the_installer_gave_no_name(self):
+    def test_address_of_the_site_is_reported_while_the_box_holds_a_viindoo_name(self):
         common.store_box_configuration(viin_managed_name=VIINDOO_NAME)
+        helpers = common.core('tools.helpers')
+        with mock.patch.object(helpers, 'get_ip', return_value=SITE_ADDRESS), box.network({'eth0': SITE_ADDRESS}):
+            self.assertEqual(self.reported()['ip'], SITE_ADDRESS)
 
-        self.assertEqual(self.reported()['ip'], VIINDOO_NAME)
+    def test_name_on_the_local_network_is_reported_instead_of_the_viindoo_name_when_the_box_has_no_address(self):
+        common.store_box_configuration(viin_managed_name=VIINDOO_NAME)
+        helpers = common.core('tools.helpers')
+        with mock.patch.object(helpers, 'get_ip', return_value=LINK_LOCAL), box.network({'eth0': LINK_LOCAL}), \
+                common.named(HOST_NAME):
+            self.assertEqual(self.reported()['ip'], f'{HOST_NAME}.local')
 
     def test_address_of_the_site_is_reported_when_the_box_has_no_name(self):
         helpers = common.core('tools.helpers')
