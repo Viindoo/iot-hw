@@ -29,7 +29,7 @@ to a card.
 This guide assumes you have never done this. You sit at a computer running a fresh Ubuntu 26.04 desktop, with a
 Raspberry Pi board in hand. You end with a Viindoo IoT Box on your network, paired with your Viindoo server, with
 its devices listed there. Do the parts in order; each step says what you should see afterwards. If it does not
-happen, go to [When something goes wrong](#9-when-something-goes-wrong).
+happen, go to [When something goes wrong](#10-when-something-goes-wrong).
 
 Every screen text in quotes is the text the box page or the Viindoo screen shows (English; the box page also
 speaks Vietnamese, with buttons at its top). The same path, with screenshots, is in the user documentation:
@@ -37,17 +37,20 @@ speaks Vietnamese, with buttons at its top). The same path, with screenshots, is
 This README gives the short version and the command lines; the documentation holds the long lists (every
 self-test line, every message).
 
-> **State on 2026-10-26.** Release pages exist for test candidates only: `box-18.0-rc.3`, a pre-release marked
-> CANDIDATE, which is for Viindoo's own test box. No supported release has been published yet. Until one
-> appears, a customer cannot finish part 2; ask Viindoo support (apps.support@viindoo.com) when it will. Look at
-> [the releases](https://github.com/Viindoo/iot-hw/releases) for the current state: this paragraph is the only
-> dated one in this guide, and the rest of the guide always says "the latest release of your series".
+> **Which release.** A customer box is written from the latest release of its series that is not marked
+> *Pre-release* (see part 3). A release marked CANDIDATE is a test build for Viindoo's own test box. If
+> [the releases](https://github.com/Viindoo/iot-hw/releases) list no supported release for your series, ask Viindoo
+> support (https://viindoo.com/ticket) when one will be published.
+>
+> **User guide.** [English](https://viindoo.com/documentation/18.0/applications/internet-of-things.html) -
+> [Tiếng Việt](https://viindoo.com/documentation/18.0/vi/applications/internet-of-things.html). The Documentation
+> link of the box page opens the guide in the language of the page.
 
 ### 1. What you need
 
 | You need | Notes |
 |---|---|
-| A Raspberry Pi board | The image is built on Raspberry Pi OS Lite, 32-bit (bookworm), and installs libraries that only a Raspberry Pi board has. This repository does not list board models and the build does not check one; before you buy, ask Viindoo support (apps.support@viindoo.com) which board to take. |
+| A Raspberry Pi board | The image is built on Raspberry Pi OS Lite, 32-bit (bookworm), and installs libraries that only a Raspberry Pi board has. This repository does not list board models and the build does not check one; before you buy, ask Viindoo support (https://viindoo.com/ticket) which board to take. |
 | The power supply of the board | The one made for your board model. |
 | A microSD card of 8 GB or more | The image is about 5 GB once written. The sources name no speed class: take a card from a known maker. Writing erases everything on it. |
 | A way to plug the card into your computer | A microSD slot, or a USB card reader (an SD slot works with a microSD-to-SD adapter). |
@@ -162,10 +165,12 @@ minutes, unplug the power supply, wait ten seconds and plug it in again.
    "Self-test", "Server", "Network", "Devices", "Software" and "Advanced". The "Network" section says "Wired
    network". The "Server" section says "The box is not connected to a server."
 
-**With Wi-Fi.** When the box starts with no cable and no Wi-Fi network it can join, it opens its own Wi-Fi network,
-which has no password, named `Viindoo-IoT-` followed by the hardware address of its Wi-Fi without colons
-(for example `Viindoo-IoT-b827eb1234ab`). It does so at start when it cannot join a network, and
-after ten minutes without any address while it runs; wait up to ten minutes before you decide it is missing.
+**With Wi-Fi.** The box opens its own setup Wi-Fi network, which has no password, only when it has no other network:
+no cable address and no Wi-Fi network it can join. It does so when it starts, and again after ten minutes without
+any address while it runs; wait up to ten minutes before you decide it is missing. With a cable plugged in and
+giving the box an address, the setup network does not appear. It is named `Viindoo-IoT-` followed by the hardware
+address of the Wi-Fi of the box (`wlan0`) without colons (for example `Viindoo-IoT-b827eb1234ab`). That address is the
+hardware address of the cable (`eth0`) plus one, so a box shows two addresses that differ by one; this is normal.
 
 1. On Ubuntu, open the network menu at the top right, choose the Wi-Fi network `Viindoo-IoT-...` and connect. Ubuntu
    may say there is no internet: that is right.
@@ -174,11 +179,14 @@ after ten minutes without any address while it runs; wait up to ten minutes befo
    not listed: type it exactly). Under "Password (leave empty for a network without one)" type its password.
    Networks that ask for a user name as well (802.1X) cannot be joined.
 4. Keep "Keep this network after a restart" ticked, then click "Join the network".
-5. The page says "The box is joining `<name>`." and loses contact with the box. Connect your computer back to the same
-   network the box joined, wait a minute, and open the box by the name the page shows
-   (`http://<host name>.local`) or by the address it has on that network (find it as in the cable steps).
-   A wrong password is not reported on the page: the box goes back to its previous network, or opens
-   `Viindoo-IoT-...` again; join that and retry.
+5. The page says "The box is joining `<name>`." Joining restarts the box software, so the page waits for the box.
+   With a network cable plugged in, the page stays reachable at the cable address and comes back by itself.
+   Without one, the page loses contact with the box: connect your computer back to the same network the box joined,
+   wait a minute, and open the box by the name the page shows (`http://<host name>.local`) or by the address it has
+   on that network (find it as in the cable steps).
+   A wrong password is reported in the Wi-Fi window ("The box could not join `<name>`: the password was refused.")
+   and by the Wi-Fi line of the "Self-test". The box goes back to its previous network, or opens `Viindoo-IoT-...`
+   again; join that and retry. The password field has a "Show password" switch for checking what you typed.
 
 The box page can be reached on port 80 (`http://`), 443 (`https://`, with a certificate your browser warns about
 until you accept it once) and 8069.
@@ -232,7 +240,39 @@ Next, connect devices and assign them in the apps that use them: see the documen
 [Connect and test devices](https://viindoo.com/documentation/18.0/applications/internet-of-things/manage-iot-box/connect-and-test-devices.html)
 and the integration pages of the IoT documentation.
 
-### 7. Updates
+### 7. Connect the POS terminals and the devices
+
+**POS terminals.** The Point of Sale reaches the box over the shop network, by the address of the box, so selling,
+printing, weighing and the customer screen keep working when the Internet is down (orders reach the server when it
+is back). Set this up once:
+
+1. Use a Chromium-based browser on every POS terminal: Chrome, Edge, or Chrome on Android. Other browsers (Firefox,
+   Safari, an iPad, a kiosk app that wraps a web view) cannot reach the box this way.
+2. Give the box a fixed address: a DHCP reservation for it on the router. The terminals follow a new address only
+   while the Internet is up.
+3. On each terminal, open the POS once. When the browser asks to allow "local network access", allow it. The browser
+   remembers the answer for that browser profile and that database address; clearing site data or changing browser
+   asks again. On managed terminals IT can allow it in advance, with the Chrome policy
+   `LocalNetworkAccessAllowedForUrls` set to the address of your Viindoo database.
+4. Print a test receipt from the POS. The box status in the navbar of the POS should read connected.
+
+A terminal that is not set up shows the cashier "The devices are not connected to this screen. Call your IT." The
+cashier does nothing else: IT repeats step 3 on that terminal. If someone clicked "Block", the browser also shows its
+own warning; allow the site again in the site settings of the browser.
+
+**Restart.** The "Restart the box" button (under "Advanced", and offered by some self-test lines) restarts the box
+software, not the operating system. Devices and printing from Viindoo pause for about a minute and the page waits
+for the box; the box is not powered off.
+
+**Scales.** The box drives serial scales: Toledo 8217 and Adam Equipment (both from core), and UTE UPA-Q
+price-computing scales, which speak at 9600 baud. Any other serial device is named "Adam Equipment" by core. Some
+scales answer nothing while the pan is empty: if a scale is plugged in and the "Devices" section does not show it
+under its right name, put a load on the pan and click "Restart the box"; the box finds it again.
+
+**Network printers.** A network printer is listed once, even when it announces itself under several names or
+addresses.
+
+### 8. Updates
 
 A box follows the release channel of its series, and nothing else. It looks for a new release when it starts, every
 night, and when you click "Look for a new release" in the "Software" section. With "Update automatically" on (the
@@ -245,10 +285,10 @@ candidate ("The release that is published is a candidate, which this box does no
 new release needs a newer image of the box than the one on its card.", write a newer image to the card (part 3), then
 pair the box again: in Viindoo open the box and click **Re-pair**, and use the new code on the box page.
 
-### 8. Logs and help
+### 9. Logs and help
 
 - The box page, "Self-test": "Download diagnostic file" saves one file with the self-test, the configuration and the
-  last log lines, without any password, code or key. Send it to apps.support@viindoo.com.
+  last log lines, without any password, code or key. Send it to Viindoo support (https://viindoo.com/ticket).
 - "Advanced": "Box log" opens the live log of the box; "Log levels" chooses how detailed it is and has a switch "Send
   the log of the box to the server".
 - In Viindoo, **IoT > Reporting > Device Logs** (or **Log IoT Box** on the box) shows what the box sends: its warnings
@@ -256,7 +296,7 @@ pair the box again: in Viindoo open the box and click **Re-pair**, and use the n
 - "Password for shell access" (under "Advanced") is for a technician and only when support asks; note it at once, the
   box does not show it again.
 
-### 9. When something goes wrong
+### 10. When something goes wrong
 
 Only the problems the box page and the server report are listed. The documentation lists every message:
 [Troubleshoot IoT boxes](https://viindoo.com/documentation/18.0/applications/internet-of-things/manage-iot-box/troubleshoot-iot-boxes.html).
@@ -265,11 +305,13 @@ Only the problems the box page and the server report are listed. The documentati
 |---|---|
 | `sha256sum` says `FAILED` | The download is damaged or incomplete: download it again. |
 | Imager does not list the card | Take the card out and put it in again, or try another reader. |
-| No `Viindoo-IoT-...` Wi-Fi network | It opens only with no cable and no Wi-Fi it can join, and after ten minutes without an address later on. Wait ten minutes, or plug in a network cable. |
+| No `Viindoo-IoT-...` Wi-Fi network | It appears only when the box has no other network, at start and after ten minutes without any address. Wait ten minutes. With a cable that gives the box an address it does not appear: open the box at the cable address. |
 | The page "The box is not ready yet" stays | Wait 15 minutes, then unplug the power supply, wait ten seconds and plug it in again. |
 | "This page cannot reach the box." | Check that your computer is on the same network as the box and that the box is powered on; the page tries again by itself. |
 | `http://viindoo-iot-xxxx.local` does not open | The name works on the same network segment only. Use the address from the screen, the ticket or the router. |
-| After joining Wi-Fi the page is gone | Join your computer to the same Wi-Fi and open the box by name or address. If `Viindoo-IoT-...` is back, join it and check the name and the password. |
+| After joining Wi-Fi the page is gone | Without a cable the page loses contact; join your computer to the same Wi-Fi and open the box by name or address. If `Viindoo-IoT-...` is back, join it and read the reason in the Wi-Fi window (for example, the password was refused). |
+| A POS terminal says "The devices are not connected to this screen. Call your IT." | The terminal is not set up: use Chrome, Edge or Chrome on Android, allow "local network access" for the database address (or set the Chrome policy `LocalNetworkAccessAllowedForUrls`), and check that the box keeps its address (part 7). |
+| A scale is plugged in but not listed | Put a load on the pan and click "Restart the box" (part 7). |
 | "This is not a pairing link." | Paste the whole link, or use "Address and code". |
 | "The server does not know this code.", "This code is too old." or "This code was already used." | Generate a new code in Viindoo and copy it exactly. |
 | "This server does not offer pairing for Viindoo IoT boxes." | The address may be wrong, the Internet Of Things app may not be installed there, or the server serves several databases and none is selected. |
@@ -279,7 +321,7 @@ Only the problems the box page and the server report are listed. The documentati
 | The box asks for the settings code and nobody has it | Switch the box off, put its card in a computer, create an empty file named `viindoo-reset` (or `viindoo-reset.txt`) at the top of the partition the computer shows, put the card back and start the box. It forgets its server and its lock; pair it again with a new code (**Re-pair** on its record, or **Connect an IoT Box**). |
 | The box shows **Disconnected** in Viindoo | Open the box page and read the self-test; each line that needs you says what to do. When the box reports again it returns to **Connected** by itself. |
 
-If none of this helps, download the diagnostic file (part 8) and send it to apps.support@viindoo.com.
+If none of this helps, download the diagnostic file (part 9) and send it to Viindoo support (https://viindoo.com/ticket).
 
 ## Build an image
 
