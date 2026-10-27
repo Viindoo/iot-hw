@@ -4,7 +4,7 @@
 import { call, send } from "../api.js";
 import { reasonText } from "../answers.js";
 import { has, t } from "../i18n.js";
-import { openDialog, store } from "../store.js";
+import { openDialog, setDeviceResult, store } from "../store.js";
 
 const { Component, xml, useState, onWillUnmount } = owl;
 
@@ -17,6 +17,53 @@ const ICONS = {
     footswitch: "fa-hand-o-down",
 };
 const LISTEN_SECONDS = 30;
+
+/* What a test of a device came to, in the language of the page now. */
+function testResult(device, answer) {
+    const detail = answer.detail || {};
+    if (answer.status === "ok") {
+        if (device.type === "scale") {
+            const unit = typeof detail.unit === "string" ? detail.unit.trim() : "";
+            return {
+                kind: "success",
+                text: unit
+                    ? t("device.weight", { value: detail.value, unit })
+                    : t("device.weight_no_unit", { value: detail.value }),
+            };
+        }
+        if (detail.reason === "sent_not_followed") {
+            // Neither a success nor an error: the box cannot say whether the printer took the test.
+            return {
+                kind: "info",
+                text: t("device.test.sent_not_followed"),
+                todo: t("device.test_todo.sent_not_followed"),
+            };
+        }
+        return { kind: "success", text: t("device.test_taken") };
+    }
+    let reason =
+        answer.status === "failed" || answer.status === "unsupported"
+            ? detail.reason
+            : answer.reason;
+    const params = { address: detail.address || "" };
+    let todoReason = reason;
+    if (reason === "printer_not_reached") {
+        if (detail.connection === "network" && params.address) {
+            reason = "printer_not_reached_network";
+            todoReason = reason;
+        } else if (detail.connection !== "usb") {
+            // The box cannot name how the printer is connected: no address advice and no USB claim.
+            todoReason = "printer_not_reached_unknown";
+        }
+    }
+    return {
+        kind: "danger",
+        text: reasonText("device.test", reason, params),
+        todo: has(`device.test_todo.${todoReason}`)
+            ? t(`device.test_todo.${todoReason}`, params)
+            : "",
+    };
+}
 
 class DeviceCard extends Component {
     static props = { device: Object };
@@ -72,9 +119,10 @@ class DeviceCard extends Component {
                 <ul class="viin-events" t-if="state.events.length">
                     <li t-foreach="state.events" t-as="event" t-key="event_index" t-esc="event"/>
                 </ul>
-                <div t-if="state.result" t-attf-class="alert alert-{{ state.result.kind }} viin-result" role="status" aria-live="polite">
-                    <div t-esc="state.result.text"/>
-                    <div t-if="state.result.todo" class="mt-1"><strong><t t-esc="t('selftest.todo')"/></strong> <t t-esc="state.result.todo"/></div>
+                <t t-set="shown" t-value="result"/>
+                <div t-if="shown" t-attf-class="alert alert-{{ shown.kind }} viin-result" role="status" aria-live="polite">
+                    <div t-esc="shown.text"/>
+                    <div t-if="shown.todo" class="mt-1"><strong><t t-esc="t('selftest.todo')"/></strong> <t t-esc="shown.todo"/></div>
                 </div>
             </div>
         </div>`;
@@ -87,8 +135,8 @@ class DeviceCard extends Component {
             testing: false,
             listening: false,
             events: [],
-            result: null,
         });
+        this.store = useState(store);
         this.abort = null;
         this.labelling = false;
         onWillUnmount(() => this.abort && this.abort.abort());
@@ -96,6 +144,16 @@ class DeviceCard extends Component {
 
     get device() {
         return this.props.device;
+    }
+
+    /* The last action on this device, said in the language of the page now. */
+    get result() {
+        const build = this.store.deviceResults[this.props.device.identifier];
+        return build ? build() : null;
+    }
+
+    setResult(build) {
+        setDeviceResult(this.props.device.identifier, build);
     }
 
     icon(device) {
@@ -146,71 +204,25 @@ class DeviceCard extends Component {
         const state = this.state;
         state.busy = true;
         state.testing = true;
-        state.result = null;
+        this.setResult(null);
         try {
             // A print test ends within about 45 seconds; the request carries no time limit of its own.
             const answer = await call("/viin_hw/device/test", {
                 method: "POST",
                 params: { device_identifier: device.identifier },
             });
-            state.result = this.testResult(device, answer);
+            this.setResult(() => testResult(device, answer));
         } finally {
             state.busy = false;
             state.testing = false;
         }
     }
 
-    testResult(device, answer) {
-        const detail = answer.detail || {};
-        if (answer.status === "ok") {
-            if (device.type === "scale") {
-                const unit = typeof detail.unit === "string" ? detail.unit.trim() : "";
-                return {
-                    kind: "success",
-                    text: unit
-                        ? t("device.weight", { value: detail.value, unit })
-                        : t("device.weight_no_unit", { value: detail.value }),
-                };
-            }
-            if (detail.reason === "sent_not_followed") {
-                // Neither a success nor an error: the box cannot say whether the printer took the test.
-                return {
-                    kind: "info",
-                    text: t("device.test.sent_not_followed"),
-                    todo: t("device.test_todo.sent_not_followed"),
-                };
-            }
-            return { kind: "success", text: t("device.test_taken") };
-        }
-        let reason =
-            answer.status === "failed" || answer.status === "unsupported"
-                ? detail.reason
-                : answer.reason;
-        const params = { address: detail.address || "" };
-        let todoReason = reason;
-        if (reason === "printer_not_reached") {
-            if (detail.connection === "network" && params.address) {
-                reason = "printer_not_reached_network";
-                todoReason = reason;
-            } else if (detail.connection !== "usb") {
-                // The box cannot name how the printer is connected: no address advice and no USB claim.
-                todoReason = "printer_not_reached_unknown";
-            }
-        }
-        return {
-            kind: "danger",
-            text: reasonText("device.test", reason, params),
-            todo: has(`device.test_todo.${todoReason}`)
-                ? t(`device.test_todo.${todoReason}`, params)
-                : "",
-        };
-    }
-
     async listen(device) {
         const state = this.state;
         state.listening = true;
         state.events = [];
-        state.result = null;
+        this.setResult(null);
         const abort = new AbortController();
         this.abort = abort;
         const timer = setTimeout(() => abort.abort(), LISTEN_SECONDS * 1000);
@@ -234,10 +246,10 @@ class DeviceCard extends Component {
                     state.events.unshift(String(body.value ?? ""));
                     state.events.splice(8);
                 } else if (body && body.reason && body.reason !== "aborted") {
-                    state.result = {
+                    this.setResult(() => ({
                         kind: "danger",
                         text: reasonText("device.listen_failed", body.reason),
-                    };
+                    }));
                     break;
                 }
             }
@@ -245,12 +257,12 @@ class DeviceCard extends Component {
             clearTimeout(timer);
             state.listening = false;
             this.abort = null;
-            if (!state.events.length && !state.result) {
-                state.result = {
+            if (!state.events.length && !this.result) {
+                this.setResult(() => ({
                     kind: "warning",
                     text: t("device.nothing_heard"),
                     todo: t("device.nothing_heard_todo"),
-                };
+                }));
             }
         }
     }
@@ -265,19 +277,18 @@ class DeviceCard extends Component {
         if (device.keyboard.is_scanner === isScanner) {
             return;
         }
-        const state = this.state;
         const answer = await call("/viin_hw/device/use_as", {
             method: "POST",
             params: { device_identifier: device.identifier, is_scanner: isScanner },
         });
         if (answer.status === "switched") {
-            state.result = {
+            this.setResult(() => ({
                 kind: "success",
                 text: t("device.switched", { kind: t(`device.kind.${answer.kind}`) }),
-            };
+            }));
             await this.env.refresh();
         } else if (answer.status !== "locked") {
-            state.result = { kind: "danger", text: reasonText("device.use_as", answer.reason) };
+            this.setResult(() => ({ kind: "danger", text: reasonText("device.use_as", answer.reason) }));
         }
     }
 
@@ -295,19 +306,19 @@ class DeviceCard extends Component {
                 params: { device_identifier: device.identifier },
             });
             if (answer.status === "added") {
-                state.result = {
+                this.setResult(() => ({
                     kind: "success",
                     text: t("device.label_added", { queue: answer.queue }),
-                };
+                }));
                 await this.env.refresh();
             } else if (answer.status === "refused" && answer.reason === "already_added") {
-                state.result = {
+                this.setResult(() => ({
                     kind: "info",
                     text: reasonText("device.label", answer.reason, { queue: answer.queue || "" }),
-                };
+                }));
                 await this.env.refresh();
             } else if (answer.status !== "locked") {
-                state.result = { kind: "danger", text: reasonText("device.label", answer.reason) };
+                this.setResult(() => ({ kind: "danger", text: reasonText("device.label", answer.reason) }));
             }
         } finally {
             this.labelling = false;

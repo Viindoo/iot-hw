@@ -61,6 +61,8 @@ jobs:
             rhysd/actionlint@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9 -color
       - name: Page texts - placeholders and vendor words
         run: python3 -I box/build/check_page_texts.py
+      - name: Page logic - documentation link and Wi-Fi scan
+        run: node --test viin_hw_homepage/static/tests/*.test.mjs
       - name: Unit of the box service
         run: |
           set -o errexit -o nounset -o pipefail

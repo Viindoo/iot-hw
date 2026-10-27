@@ -14,6 +14,7 @@ export const store = reactive({
     unlock: null,        // {resolve}: the settings code is being asked
     restarting: null,    // {kind, ...}: the box is restarting; the page waits for it
     notice: null,        // {kind, text}: the line shown on top of the page after an action
+    deviceResults: {},   // device identifier -> function giving {kind, text, todo} of the last action on it, in the language of the page
     pairDraft: { mode: "link", link: "", serverUrl: "", code: "" },
 });
 
@@ -28,4 +29,10 @@ export function closeDialog() {
 /* A line on top of the page after an action: `kind` is a Bootstrap alert colour. */
 export function setNotice(kind, text) {
     store.notice = { kind, text };
+}
+
+/* The line a device shows after an action on it. It is kept here, not in the card, and as a function of the language,
+ * so that a switch of language shows the same result in the new one; `build` null clears it. */
+export function setDeviceResult(identifier, build) {
+    store.deviceResults[identifier] = build;
 }
