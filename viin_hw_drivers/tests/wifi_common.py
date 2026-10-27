@@ -271,6 +271,18 @@ def settings_of(pairs):
     return found
 
 
+def why_not_joined(profile):
+    """What nmcli says when the network of `profile` does not let the box in: the access point heard, a password it
+    refused is a lack of secrets; no access point heard is a network that could not be found."""
+    networks = world()['networks']
+    heard = not world()['access_point_running'] and profile['ssid'] in networks
+    key_mgmt = profile.get('key_mgmt')
+    protected_as_asked = key_mgmt not in ('wpa-psk', 'sae') or key_mgmt in protections(profile['ssid'])
+    if heard and key_mgmt in SECRET and protected_as_asked:
+        return '(7) Secrets were required, but not provided.'
+    return '(53) The Wi-Fi network could not be found.'
+
+
 def connection_add(words):
     settings = settings_of(words)
     if settings is None or len(words) % 2 or settings.get('type') not in ('wifi', '802-11-wireless') \
@@ -321,6 +333,7 @@ def connection_up(words, asked_by_the_page):
         while not (STATE / 'released').exists() and time.monotonic() < deadline:
             time.sleep(0.02)
     if not joinable(profile):
+        print(f'Error: Connection activation failed: {why_not_joined(profile)}', file=sys.stderr)
         return NOT_JOINED
     change(active=profile['id'], active_ssid=profile['ssid'], active_bssid=bssid)
     return 0
@@ -799,6 +812,7 @@ def network_manager(case, answer_delay=0):
     case.enterContext(mock.patch.object(wifi, 'INTERFACES', interfaces))
     case.enterContext(mock.patch.object(wifi, 'PROFILES', manager.profiles))
     case.enterContext(mock.patch.object(wifi, 'NETPLAN', manager.netplan))
+    case.enterContext(mock.patch.object(wifi, 'LAST_JOIN', Path(directory, 'last-join.json')))
     if answer_delay is not None:
         case.enterContext(mock.patch.object(wifi, 'ANSWER_DELAY', answer_delay))
     # The radio of the stand-in hears at once, or after the empty scans the world says: no join waits long for it.

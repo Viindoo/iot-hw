@@ -82,6 +82,11 @@ CERTIFICATE_ENDING = datetime.timedelta(days=30)
 # asked again.
 ACCEPT_AGAIN = datetime.timedelta(days=7)
 MAX_TEXT = 300
+# The address of the box on its own access point, as core's access point script gives it.
+ACCESS_POINT_ADDRESS = '10.11.12.1'
+# What a join comes to when the network is the cause; a join that came to wifi.BUSY was not started and says nothing
+# of the network.
+JOIN_FAILURES = (wifi.PASSWORD_REFUSED, wifi.NOT_REACHED)
 LOG_TAIL_BYTES = 256 * 1024
 LOG_TAIL_LINES = 500
 HIDDEN = '[hidden]'
@@ -476,7 +481,10 @@ def _network():
     interfaces = _interfaces()
     gateway = (netifaces.gateways().get('default') or {}).get(netifaces.AF_INET)
     kinds = {interface['kind'] for interface in interfaces}
-    access_point = any('10.11.12.1' in interface['addresses'] for interface in interfaces)
+    # The box is on its access point only while it has no address on another network: with a cable's, the access
+    # point that still serves is not the way the box reaches its site.
+    addresses = {address for interface in interfaces for address in interface['addresses']}
+    access_point = addresses == {ACCESS_POINT_ADDRESS}
     kind = ('access_point' if access_point else 'wired' if 'wired' in kinds else 'wifi' if 'wifi' in kinds
             else 'other' if interfaces else 'none')
     ssid = ''
@@ -492,6 +500,8 @@ def _network():
         'ssid': ssid,
         'hostname': helpers.get_hostname(),
         'interfaces': interfaces,
+        # The latest join asked from the page: {'ssid', 'result', 'at'}, None before any since the box started.
+        'last_join': wifi.last_join(),
     }
 
 
@@ -502,6 +512,10 @@ def _network_line(network):
         return _line('network', FAILED, 'no_address', 'connect_network', **details)
     if all(ipaddress.ip_address(address).is_link_local for address in addresses):
         return _line('network', FAILED, 'link_local_only', 'check_dhcp', **details)
+    last_join = network['last_join']
+    if last_join and last_join['result'] in JOIN_FAILURES:
+        return _line('network', WARNING, f"join_{last_join['result']}", 'join_wifi',
+                     join_ssid=_text(last_join['ssid'], 64), **details)
     if network['kind'] == 'access_point':
         return _line('network', WARNING, 'access_point', 'join_wifi', **details)
     if not network['gateway']:
@@ -645,20 +659,18 @@ def browser_address():
     """The address the box gives to browsers - the one it reports to its server - and which kind it is.
 
     {'address', 'kind'}: the kind is where identity chose the address from - own_name (the name the installer typed
-    for the box, which the certificate of the customer or one the box made may cover), viindoo_name, address,
+    for the box, which the certificate of the customer or one the box made may cover), address,
     local_name (`<hostname>.local`, the box has no browsable address of the site). While the seam that chooses it
-    is not in place, core's value stands and is told apart by comparison: own_name, viindoo_name, address or name
-    (any other name).
+    is not in place, core's value stands and is told apart by comparison: own_name, address or name (any other
+    name).
     """
     chosen = identity.reported_address()
     address = str(chosen['address'] or '')
     if chosen['source'] != identity.CORE_VALUE:
         return {'address': address, 'kind': chosen['source']}
-    own, managed = _conf(trust.BOX_ADDRESS_KEY).lower(), _conf(trust.MANAGED_NAME_KEY).lower()
+    own = _conf(trust.BOX_ADDRESS_KEY).lower()
     if own and address.lower() == own:
         kind = identity.OWN_NAME
-    elif managed and address.lower() == managed:
-        kind = identity.VIINDOO_NAME
     elif _is_address(address):
         kind = identity.ADDRESS
     else:
@@ -699,31 +711,6 @@ def _address_not_covered_line(certificate, details):
     return _line('browser_address', WARNING, 'certificate_not_for_address', 'contact_support', **details)
 
 
-def _viindoo_name_certificate_line(certificate, details):
-    """The line for browsers given the Viindoo name: they get the certificate of that name, not `certificate`.
-
-    A certificate of the name that cannot be read leaves unknown what they get. One that has ended is what they get
-    until the box gives browsers its address instead, at the next look of its Viindoo name, which a restart brings
-    about. That it ends soon, and its renewal, are for the viindoo_name line to say, by the schedule on which the box
-    renews it. `certificate`, the box's own, is what a browser gets that opens the box by its address: it ending or
-    having ended is a warning, since browsers given the name do not meet it.
-    """
-    served = trust.name_certificate()
-    if served is None:
-        return _line('browser_address', WARNING, 'name_certificate_unreadable', 'restart_box', **details)
-    details = dict(details, certificate_kind='viindoo_name', certificate_ends=served['expiry'])
-    now = trust.utc_now()
-    if datetime.datetime.strptime(served['expiry'], '%Y-%m-%dT%H:%M:%SZ') <= now:
-        return _line('browser_address', FAILED, 'certificate_expired', 'restart_box', **details)
-    own_ends = datetime.datetime.strptime(certificate['expiry'], '%Y-%m-%dT%H:%M:%SZ')
-    renew = 'renew_own_certificate' if certificate['kind'] == 'customer' else 'restart_box'
-    if own_ends <= now:
-        return _line('browser_address', WARNING, 'address_certificate_expired', renew, **details)
-    if own_ends - now < CERTIFICATE_ENDING:
-        return _line('browser_address', WARNING, 'address_certificate_ending', renew, **details)
-    return _line('browser_address', OK, identity.VIINDOO_NAME, **details)
-
-
 def _browser_address_line():
     given = browser_address()
     certificate = trust.box_certificate()
@@ -739,8 +726,6 @@ def _browser_address_line():
         return _line('browser_address', FAILED, 'no_certificate', 'restart_box', **details)
     if certificate['kind'] == 'shipped':
         return _line('browser_address', WARNING, 'shared_certificate', 'restart_box', **details)
-    if given['kind'] == identity.VIINDOO_NAME:
-        return _viindoo_name_certificate_line(certificate, details)
     if trust.certificate_unserved():
         # What follows reads the certificate file, which browsers do not get yet; a restart starts the web server on it.
         return _line('browser_address', WARNING, 'certificate_not_served', 'restart_box', **details)
@@ -1086,7 +1071,7 @@ def _watch():
 def status(wait=PROBE_WAIT, refresh=False):
     """What the page of the box shows, under Server, Network, Devices, Software and Advanced, with the self-test.
 
-    Keys: 'selftest' (as `run` gives it), 'server', 'network', 'devices',
+    Keys: 'selftest' (as `run` gives it), 'server', 'network', 'kept_wifi' (as `_kept_wifi` gives it), 'devices',
     'software', 'advanced', 'layer', 'drivers'.
     """
     result, context = _run(wait, refresh)
@@ -1102,6 +1087,7 @@ def status(wait=PROBE_WAIT, refresh=False):
             'channel': reporting.channel(),
         },
         'network': context['network'],
+        'kept_wifi': _kept_wifi(),
         'devices': context['devices'],
         'software': dict(
             software, update_state=update_state(software), candidate_banner=software['candidate_box']),

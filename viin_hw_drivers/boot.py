@@ -23,6 +23,11 @@ CORE = 'odoo.addons.hw_drivers'
 HOMEPAGE = 'viin_hw_homepage'
 # The seam the home page module declares in the file that closes and locks the routes of core.
 CORE_ROUTES_SEAM = 13
+# The USB library, which the device thread of core and the receipt printer module of core, imported by the box
+# service after the layer, both import first. Its package imports its own modules as it starts, so two threads that
+# import it at once may each be handed a module halfway loaded, and both lose it: the USB devices and the receipt
+# printer module with them. Imported once before the threads of core run, it is whole for each of them.
+USB_LIBRARY = 'usb.core'
 
 
 def _part(name):
@@ -103,6 +108,7 @@ def _start(problems):
                 'Viindoo layer integrity: %s was loaded before the layer, so the layer changes nothing in it. '
                 'Put viin_hw_drivers first in server_wide_modules.', CORE)
         _load_files(seams)
+        _guarded(seams, 'USB library', _import_usb_library)
         _guarded(seams, 'page use', lambda: _part('page_use').begin())
         _guarded(seams, 'box certificate', _keep_certificate, restart_web_server=not in_order)
     finally:
@@ -175,6 +181,14 @@ def _load_files(seams):
         f'controllers.{found.name}' for found in pkgutil.iter_modules(_part('controllers').__path__)))
     for name in sorted(names):
         _guarded(seams, f'{name.replace(".", "/")}.py', _part, name)
+
+
+def _import_usb_library():
+    """Import the USB library whole, before the threads of core run. A box without it starts as core does without it."""
+    try:
+        importlib.import_module(USB_LIBRARY)
+    except ModuleNotFoundError:
+        _logger.warning('Viindoo layer: the USB library %s is not installed; core finds no USB device', USB_LIBRARY)
 
 
 def _keep_certificate(restart_web_server):

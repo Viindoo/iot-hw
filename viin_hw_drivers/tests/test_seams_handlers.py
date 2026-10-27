@@ -1,10 +1,14 @@
-"""The device handlers the box loads, its default screen page, the status ticket of a receipt printer and the owner
-of a device (rows 4, 14, 19 and 15)."""
+"""The device handlers the box loads, its default screen page, the status ticket of a receipt printer, the owner
+of a device, the answer to an action that failed and the listing of the network printers (rows 4, 14, 19, 15,
+20 and 22)."""
 import json
 import tempfile
 import time
 import types
 from unittest import mock
+from urllib.parse import quote
+
+import serial
 
 import common
 import services_common as box
@@ -13,7 +17,7 @@ CREDENTIAL = 'suite-credential-handlers'
 SESSION = 'box-suite-station'
 REQUEST = 'box-suite-request-1'
 SCREEN_PAGE = '/point_of_sale/display'
-SEAMS = (1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 15, 17, 18)
+SEAMS = (1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 15, 17, 18, 20, 22)
 # Core's driver files that call the server of the box themselves: the screen and the keyboard layouts.
 CORE_DRIVERS_THAT_CALL_THE_SERVER = ('DisplayDriver', 'KeyboardUSBDriver')
 
@@ -66,6 +70,18 @@ CORE_FILE_WITH_ANOTHER_LIBRARY = {'import struct': 'import struct\nimport reques
 # The title of the status ticket a Viindoo box prints, and the name core gives the box on its own ticket.
 TICKET_TITLE = b'Viindoo IoT Box'
 CORE_BOX_NAME = b'IoTBox'
+# The scale of a box whose port never opened, and the page that asks it for a weight.
+FAILING_SCALE = 'box_suite_failing_scale'
+WORKING_SCANNER = 'box_suite_working_scanner'
+FAILING_ACTION = 'read_once'
+# The network printers of a site, as core lists them: the same printer found by its address and by its service name.
+PRINTER_ADDRESS = '192.0.2.31'
+OTHER_PRINTER_ADDRESS = '198.51.100.7'
+SERVICE_NAME = 'HP LaserJet Pro M404n [3A1B2C]'
+# What `avahi-browse --parsable` says of that service: the name escapes a space as \032.
+SERVICE_LINE = (
+    '=;eth0;IPv4;HP\\032LaserJet\\032Pro\\032M404n\\032[3A1B2C];_ipp._tcp;local;NPI3A1B2C.local;'
+    f'{PRINTER_ADDRESS};631;"txtvers=1"\n').encode()
 # The network interfaces of a box that has none but its loopback, as the printer driver of core reads them.
 NO_NETWORK = types.SimpleNamespace(AF_INET=2, interfaces=lambda: [], ifaddresses=lambda _interface: {})
 
@@ -283,10 +299,151 @@ class TestCoreThatReachesTheNetworkOtherwise(common.BoxStateCase):
         self.assertIn(LAYER_DEVICE, self.happened['devices'])
 
 
+class TestActionOnADeviceThatFails(common.BoxCase):
+    """A device whose port never opened: the page that asks it for a weight reads an answer, and the scanner works."""
+
+    def setUp(self):
+        super().setUp()
+        box.keep_files(self, box.OWNERS_FILE)
+        main = common.core('main')
+        scale = box.plug(FAILING_SCALE, 'scale')
+        box.plug(WORKING_SCANNER)
+        for identifier in (FAILING_SCALE, WORKING_SCANNER):
+            self.addCleanup(main.iot_devices.pop, identifier, None)
+
+        def read_once(data):
+            raise serial.SerialException('could not open the port of the scale')
+
+        scale._actions[FAILING_ACTION] = read_once
+        # What the box logged of earlier failures is not what this test counts.
+        patch = mock.patch.object(common.layer('seams.handlers'), '_failed_actions', set())
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def ask(self, identifier, action):
+        return self.request(
+            '/hw_drivers/action',
+            {'session_id': SESSION, 'device_identifier': identifier, 'data': json.dumps({'action': action})})
+
+    def test_action_that_fails_is_answered_as_not_done_with_the_header_a_page_needs(self):
+        response = self.ask(FAILING_SCALE, FAILING_ACTION)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(response.get_json().get('result'), False, response.get_json())
+        self.assertEqual(response.headers.get('Access-Control-Allow-Origin'), '*')
+
+    def test_failures_of_the_same_device_are_logged_with_their_traceback_once(self):
+        with common.box_log() as log:
+            for _ask in range(3):
+                self.ask(FAILING_SCALE, FAILING_ACTION)
+
+        self.assertEqual(log().count('Traceback'), 1)
+        self.assertIn(FAILING_SCALE, log())
+
+    def test_scanner_keeps_adding_items_after_the_scale_failed(self):
+        self.ask(FAILING_SCALE, FAILING_ACTION)
+
+        answer = self.ask(WORKING_SCANNER, 'box_suite')
+
+        self.assertIs(answer.get_json().get('result'), True)
+        self.assertEqual(common.core('main').iot_devices[WORKING_SCANNER].asked, ['box_suite'])
+
+    def test_station_that_asked_a_failing_device_is_still_its_owner(self):
+        self.ask(FAILING_SCALE, FAILING_ACTION)
+
+        self.assertEqual(common.layer('seams.handlers').device_owner(FAILING_SCALE), SESSION)
+
+
+class TestNetworkPrinterListing(common.BoxCase):
+    """The printers core lists, one entry for each address: the rule of Odoo 19 on the listing of core."""
+
+    def setUp(self):
+        super().setUp()
+        self.handlers = common.layer('seams.handlers')
+        self.interface = common.core('main').interfaces['PrinterInterface']()
+
+    def printer(self, uri, device_id=''):
+        identifier = self.interface.get_identifier(uri)
+        return identifier, {
+            'identifier': identifier, 'url': uri, 'device-uri': uri, 'device-id': device_id, 'device-class': 'network',
+            'device-make-and-model': 'HP LaserJet', 'disconnect_counter': 0}
+
+    def listing(self, *printers, registered=(), services=SERVICE_LINE):
+        """The identifiers of the listing the box gives of the entries `printers` core lists."""
+        listed = dict(printers)
+        main = common.core('main')
+        for identifier in registered:
+            box.plug(identifier)
+            self.addCleanup(main.iot_devices.pop, identifier, None)
+        with mock.patch.object(self.handlers, '_browse_services', return_value=services):
+            given = self.handlers._listing_without_duplicates(lambda _interface: listed)(self.interface)
+        return list(given)
+
+    def test_printer_found_by_two_addresses_is_listed_once(self):
+        by_socket = self.printer(f'socket://{PRINTER_ADDRESS}')
+        by_ipp = self.printer(f'ipp://{PRINTER_ADDRESS}/ipp/print')
+
+        self.assertEqual(self.listing(by_socket, by_ipp), [by_ipp[0]])
+
+    def test_printer_found_by_its_service_name_and_by_its_address_is_listed_once(self):
+        by_service = self.printer(f'dnssd://{quote(SERVICE_NAME)}._ipp._tcp.local/?uuid=0000')
+        by_socket = self.printer(f'socket://{PRINTER_ADDRESS}')
+
+        self.assertEqual(self.listing(by_service, by_socket), [by_service[0]])
+
+    def test_printer_the_box_has_registered_stays_whatever_the_others_announce(self):
+        by_socket = self.printer(f'socket://{PRINTER_ADDRESS}', 'CMD:ESC/POS;')
+        by_ipp = self.printer(f'ipp://{PRINTER_ADDRESS}/ipp/print')
+
+        self.assertEqual(self.listing(by_socket, by_ipp, registered=[by_ipp[0]]), [by_ipp[0]])
+
+    def test_printer_that_announces_a_command_language_is_preferred_to_the_first(self):
+        by_socket = self.printer(f'socket://{PRINTER_ADDRESS}', 'MFG:HP;CMD:ESC/POS;')
+        by_ipp = self.printer(f'ipp://{PRINTER_ADDRESS}/ipp/print')
+
+        self.assertEqual(self.listing(by_ipp, by_socket), [by_socket[0]])
+
+    def test_printers_of_two_addresses_are_both_listed(self):
+        here = self.printer(f'socket://{PRINTER_ADDRESS}')
+        there = self.printer(f'socket://{OTHER_PRINTER_ADDRESS}')
+
+        self.assertEqual(self.listing(here, there), [here[0], there[0]])
+
+    def test_printer_without_an_address_is_never_left_out(self):
+        usb = self.printer('usb://HP/LaserJet?serial=0001')
+        queue = self.printer('softbox:/queue')
+
+        self.assertEqual(self.listing(usb, queue), [usb[0], queue[0]])
+
+    def test_printers_found_by_service_name_are_all_listed_when_the_network_cannot_be_asked(self):
+        by_service = self.printer(f'dnssd://{quote(SERVICE_NAME)}._ipp._tcp.local/?uuid=0000')
+        by_socket = self.printer(f'socket://{PRINTER_ADDRESS}')
+        with mock.patch.object(self.handlers, '_browse_services', side_effect=FileNotFoundError('avahi-browse')):
+            given = self.handlers._listing_without_duplicates(
+                lambda _interface: dict([by_service, by_socket]))(self.interface)
+
+        self.assertEqual(list(given), [by_service[0], by_socket[0]])
+
+    def test_entries_core_holds_are_not_changed(self):
+        by_socket = self.printer(f'socket://{PRINTER_ADDRESS}')
+        by_ipp = self.printer(f'ipp://{PRINTER_ADDRESS}/ipp/print')
+        held = dict([by_socket, by_ipp])
+        before = json.dumps(held, sort_keys=True)
+
+        self.handlers._listing_without_duplicates(lambda _interface: held)(self.interface)
+
+        self.assertEqual(json.dumps(held, sort_keys=True), before)
+
+    def test_listing_of_the_printer_interface_of_core_is_the_one_that_leaves_out_the_copies(self):
+        get_devices = vars(type(self.interface))['get_devices']
+
+        self.assertTrue(getattr(get_devices, 'viin_one_entry_per_printer', False))
+
+
 class TestHandlerFilesSeamMoved(common.MovedSeamCase):
     number = 4
     core_changes = CORE_FILE_WITH_ANOTHER_LIBRARY
-    other_seams = tuple(seam for seam in SEAMS if seam != 4)
+    other_seams = tuple(seam for seam in SEAMS if seam not in (4, 22))
 
 
 class TestScreenPageSeamMoved(common.MovedSeamCase):
@@ -305,4 +462,19 @@ class TestDeviceOwnerSeamMoved(common.MovedSeamCase):
     number = 15
     core_changes = {'def action(self, session_id, device_identifier, data):':
                     'def action(self, session_id, device_identifier, data, options=None):'}
-    other_seams = tuple(seam for seam in SEAMS if seam != 15)
+    other_seams = tuple(seam for seam in SEAMS if seam not in (15, 20))
+
+
+class TestActionErrorsSeamMoved(common.MovedSeamCase):
+    number = 20
+    core_changes = {'def action(self, session_id, device_identifier, data):':
+                    'def action(self, session_id, device_identifier, data, options=None):'}
+    # The owner of a device is remembered by the same function: seam 15 moves with it.
+    other_seams = tuple(seam for seam in SEAMS if seam not in (15, 20))
+
+
+class TestPrinterListingSeamMoved(common.MovedSeamCase):
+    number = 22
+    core_changes = {'def get_devices(self):\n        discovered_devices = {}':
+                    'def get_devices(self, scan=False):\n        discovered_devices = {}'}
+    other_seams = tuple(seam for seam in SEAMS if seam != 22)

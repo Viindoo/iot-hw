@@ -248,6 +248,86 @@ class TestJoinThatFails(WifiCase):
         self.assertEqual(self.kept(), ('Office', 'office-password'))
 
 
+class TestWhyAJoinFailed(WifiCase):
+    """The box says why a join did not come to be: the page tells it, and the self-test reads it."""
+
+    def setUp(self):
+        super().setUp()
+        self.wifi = common.layer('wifi')
+
+    def test_password_typed_wrong_is_reported_as_password_refused(self):
+        self.network.change(networks={'Workshop': PASSWORD})
+
+        self.join('Workshop', 'typed-wrong', persistent=True)
+
+        self.assertEqual(self.wifi.last_join()['result'], 'password_refused')
+        self.assertEqual(self.wifi.last_join()['ssid'], 'Workshop')
+
+    def test_network_nobody_hears_is_reported_as_not_reached(self):
+        self.network.change(networks={})
+
+        self.join('Workshop', PASSWORD, persistent=True)
+
+        self.assertEqual(self.wifi.last_join()['result'], 'not_reached')
+
+    def test_network_joined_is_reported_as_joined_with_its_name_and_the_time(self):
+        self.network.change(networks={'Workshop': PASSWORD})
+        before = time.time()
+
+        self.join('Workshop', PASSWORD, persistent=True)
+
+        record = self.wifi.last_join()
+        self.assertEqual((record['ssid'], record['result']), ('Workshop', 'joined'))
+        self.assertTrue(before - 1 <= record['at'] <= time.time() + 1, record)
+
+    def test_join_asked_while_the_box_is_busy_is_reported_as_busy(self):
+        watch = wifi_common.WatchOfTheBox(self, self.network)
+        self.enterContext(mock.patch.multiple(self.wifi, LOCK=watch.lock, HOLD_WAIT=1))
+        self.network.change(networks={'Workshop': PASSWORD})
+
+        with watch.program.locked() as held:
+            self.assertTrue(held)
+            self.join('Workshop', PASSWORD, persistent=True)
+
+        self.assertEqual(self.wifi.last_join()['result'], 'busy')
+
+    def test_the_latest_join_is_the_one_reported(self):
+        self.network.change(networks={'Workshop': PASSWORD})
+        self.join('Workshop', 'typed-wrong', persistent=True)
+
+        self.join('Workshop', PASSWORD, persistent=True)
+
+        self.assertEqual(self.wifi.last_join()['result'], 'joined')
+
+    def test_no_join_yet_or_a_record_that_cannot_be_read_is_none(self):
+        self.assertIsNone(self.wifi.last_join())
+        for case, content in {'not a record': 'garbage', 'unknown result': '{"ssid": "A", "result": "x", "at": 1}',
+                              'no time': '{"ssid": "A", "result": "joined"}'}.items():
+            with self.subTest(case):
+                self.wifi.LAST_JOIN.write_text(content)
+
+                self.assertIsNone(self.wifi.last_join())
+
+    def test_network_not_kept_is_not_brought_up_when_a_join_fails(self):
+        self.network.change(networks={'Workshop': PASSWORD})
+
+        self.join('Workshop', 'typed-wrong', persistent=True)
+
+        words = ['connection', 'up', 'id', PROFILE]
+        self.assertEqual([call for call in self.network.nmcli_calls()
+                          if any(call[place:place + 4] == words for place in range(len(call)))], [])
+        self.assertEqual(self.network.access_point_starts(), [['force']])
+
+    def test_network_kept_is_brought_up_when_a_join_fails(self):
+        self.keep_earlier('Office', 'office-password')
+        self.network.change(networks={'Office': 'office-password', 'Workshop': PASSWORD})
+
+        self.join('Workshop', 'typed-wrong', persistent=True)
+
+        self.assertEqual(self.network.world()['active_ssid'], 'Office')
+        self.assertEqual(self.wifi.last_join()['result'], 'password_refused')
+
+
 class TestWhatTheBoxRefuses(WifiCase):
 
     def test_name_or_password_no_network_can_have_is_refused_and_nothing_is_joined(self):

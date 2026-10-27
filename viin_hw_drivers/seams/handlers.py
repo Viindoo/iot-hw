@@ -12,12 +12,16 @@ import functools
 import importlib
 import importlib.util
 import inspect
+import ipaddress
 import json
 import logging
 import os
+import re
+import subprocess
 import sys
 import threading
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 import jinja2
 
@@ -44,6 +48,10 @@ PRINTER_HANDLER = 'hw_drivers/iot_handlers/drivers/PrinterDriver_L.py'
 PRINTER_DRIVER = 'PrinterDriver'
 STATUS_TICKET = 'print_status'
 STATUS_TICKET_SEAM = 19
+ACTION_ERRORS_SEAM = 20
+PRINTER_LISTING_SEAM = 22
+PRINTER_INTERFACE = 'PrinterInterface'
+PRINTER_INTERFACE_HANDLER = 'hw_drivers/iot_handlers/interfaces/PrinterInterface_L.py'
 # What core's status ticket says of the box, each as the text core prints and the one a Viindoo box prints instead.
 STATUS_TICKET_WORDS = {
     'title': ('IoTBox Status', 'Viindoo IoT Box'),
@@ -263,7 +271,7 @@ class _HandlerLoader(FunctionSeam):
             _step('the list of handler files', _after_core_files, watch.failed)
             _step('the handler files of the layer', _load_layer_files)
             # The screen page and the printer driver of core exist from now on.
-            apply_seams(only=(SCREEN_PAGE_SEAM, STATUS_TICKET_SEAM))
+            apply_seams(only=(SCREEN_PAGE_SEAM, STATUS_TICKET_SEAM, PRINTER_LISTING_SEAM))
             _step('verified calls of the handler files', _verify_server_calls)
             # Odoo routes the controllers of the handler files only once its routing is built again.
             _step('the routes of the handler files', lazy_property.reset_all, http.root)
@@ -554,3 +562,201 @@ class DeviceOwner(PartsSeam):
 
     def apply_part(self, part):
         self._wrapped[part].apply()
+
+
+# The device actions that failed, each as (device, kind of error): the first of each is logged in full.
+MAX_FAILED_ACTIONS = 256
+_failed_actions = set()
+_failed_actions_lock = threading.Lock()
+
+
+def _log_failed_action(identifier, error):
+    key = (str(identifier)[:MAX_OWNER], type(error).__name__)
+    with _failed_actions_lock:
+        first = key not in _failed_actions
+        if first:
+            if len(_failed_actions) >= MAX_FAILED_ACTIONS:
+                _failed_actions.clear()
+            _failed_actions.add(key)
+    if first:
+        _logger.warning(
+            'An action on the device %s failed (%s); the box answers that it was not done, and logs this kind of '
+            'failure of this device in full once', key[0], key[1], exc_info=error)
+    else:
+        _logger.debug('An action on the device %s failed again (%s)', key[0], key[1])
+
+
+def _answer_failed_action(original):
+    def action(controller, *arguments, **parameters):
+        try:
+            return original(controller, *arguments, **parameters)
+        except Exception as error:
+            identifier = parameters.get('device_identifier', arguments[1] if len(arguments) > 1 else None)
+            _log_failed_action(identifier, error)
+            # What core answers for a device it does not know: the page reads it as an action not done.
+            return False
+
+    return action
+
+
+@register
+class ActionErrors(_Wrapped):
+    number = ACTION_ERRORS_SEAM
+    feature = ('an action on a device that fails is answered as not done, as core answers a device it does not '
+               'know, instead of an error without the headers a page needs to read it')
+
+    def __init__(self):
+        super().__init__(
+            f'{CORE}.controllers.driver', 'DriverController.action',
+            ('self', 'session_id', 'device_identifier', 'data'), _answer_failed_action)
+
+
+# One request to the mDNS daemon for the printers of the site's network, and how long it is given to answer.
+MDNS_BROWSE = ('avahi-browse', '--all', '--resolve', '--terminate', '--parsable', '--no-db-lookup')
+MDNS_TIMEOUT = 15
+_ESCAPED_BYTE = re.compile(rb'\\(\d{3})')
+_mdns_problem = {'told': False}
+
+
+def _browse_services():
+    """What the mDNS daemon says of the services of the network, one `avahi-browse` line per service address."""
+    return subprocess.run(MDNS_BROWSE, capture_output=True, timeout=MDNS_TIMEOUT, check=True).stdout
+
+
+def _mdns_addresses():
+    """{'<service name>.<type>.<domain>' in lower case: IPv4 address} of the services the network announces.
+
+    Empty when the daemon cannot be asked: a printer named by a service name then keeps that name as its address,
+    and is listed beside the same printer found by its IP.
+    """
+    try:
+        output = _browse_services()
+    except (OSError, subprocess.SubprocessError) as error:
+        if not _mdns_problem['told']:
+            _mdns_problem['told'] = True
+            _logger.warning(
+                'The printers announced on the network cannot be matched to an address (%s): a printer found by '
+                'its service name may be listed beside the same printer found by its address', _describe(error))
+        return {}
+    found = {}
+    for line in output.splitlines():
+        # =;<interface>;<protocol>;<name>;<type>;<domain>;<host>;<address>;<port>;<text>
+        fields = line.split(b';')
+        if len(fields) < 8 or fields[0] != b'=' or fields[2] != b'IPv4':
+            continue
+        name = _ESCAPED_BYTE.sub(lambda match: bytes([int(match.group(1)) & 0xFF]), fields[3])
+        service = b'.'.join((name, fields[4], fields[5])).decode('utf-8', 'replace').lower()
+        found.setdefault(service, fields[7].decode('ascii', 'replace'))
+    return found
+
+
+def _printer_host(entry):
+    """The host of the address of the printer `entry`, as the URI of its print queue or of its device names it."""
+    address = entry.get('device-uri') or entry.get('url')
+    try:
+        host = urlsplit(address).hostname if isinstance(address, str) else None
+    except ValueError:
+        return None
+    # `hostname` lower-cases only what comes before a percent sign.
+    return unquote(host).lower() if host else None
+
+
+def _printer_addresses(listed):
+    """{identifier: address of the printer} for the entries of `listed` that have one.
+
+    An address is the IP in the URI; a service name of the network
+    (`<name>._ipp._tcp.local`) is matched to the IP its service announces,
+    and any other host name is its own address.
+    """
+    hosts = {identifier: _printer_host(entry) for identifier, entry in listed.items()}
+    announced = None
+    addresses = {}
+    for identifier, host in hosts.items():
+        if not host:
+            continue
+        try:
+            addresses[identifier] = str(ipaddress.ip_address(host))
+            continue
+        except ValueError:
+            pass
+        if host.endswith('.local') and announced is None:
+            announced = _mdns_addresses()
+        addresses[identifier] = (announced or {}).get(host, host)
+    return addresses
+
+
+def _one_entry_per_printer(listed):
+    """The listing of the printers with one entry for each address: the rule of Odoo 19, in the same order.
+
+    Of the entries that share an address, the one the box has registered as a printer already stays; else the one
+    that announces a command language (`CMD:` or `ZPL` in its device id); else the first by identifier. An entry
+    without an address is never left out. The entries are the ones core holds, and are not changed.
+    """
+    addresses = _printer_addresses(listed)
+    registered = core('main').iot_devices
+    chosen = {}
+    for identifier in sorted(addresses, key=lambda name: (addresses[name], name)):
+        entry = listed[identifier]
+        address = addresses[identifier]
+        rank = (
+            identifier not in registered,
+            not any(command in (entry.get('device-id') or '') for command in ('CMD:', 'ZPL')),
+        )
+        if address not in chosen or rank < chosen[address][0]:
+            chosen[address] = (rank, identifier)
+    kept = {identifier for _rank, identifier in chosen.values()}
+    return {
+        identifier: entry for identifier, entry in listed.items() if identifier not in addresses or identifier in kept}
+
+
+def _listing_without_duplicates(original):
+    def get_devices(interface):
+        listed = original(interface)
+        try:
+            return _one_entry_per_printer(listed)
+        except Exception:
+            # Duplicated entries are a nuisance; a printer that vanishes from the listing is a defect.
+            _logger.exception('The printers could not be matched by address: the listing of core stands')
+            return listed
+
+    get_devices.viin_one_entry_per_printer = True
+    return get_devices
+
+
+def _printer_listing_calls(tree):
+    """Whether the printer interface `tree` still has `get_devices(self)` and a dict of the printers it holds."""
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == PRINTER_INTERFACE:
+            names = {
+                target.id for member in node.body if isinstance(member, ast.Assign) for target in member.targets
+                if isinstance(target, ast.Name)}
+            listing = [
+                member for member in node.body if isinstance(member, ast.FunctionDef) and member.name == 'get_devices']
+            return ('printer_devices' in names and len(listing) == 1
+                    and [argument.arg for argument in listing[0].args.args] == ['self'])
+    return False
+
+
+@register
+class PrinterListing(Seam):
+    number = PRINTER_LISTING_SEAM
+    target = f'{PRINTER_INTERFACE}.get_devices in {CORE_HANDLERS}.interfaces.PrinterInterface_L'
+    feature = 'a network printer that core finds by several addresses is listed once'
+    after = HandlerFiles.number
+
+    def check(self):
+        try:
+            tree = ast.parse(Path(file_path(PRINTER_INTERFACE_HANDLER)).read_bytes())
+        except (OSError, SyntaxError, ValueError) as error:
+            raise SeamError(f'{PRINTER_INTERFACE_HANDLER} cannot be read ({type(error).__name__})') from None
+        if not _printer_listing_calls(tree):
+            raise SeamError(
+                f'{PRINTER_INTERFACE_HANDLER} no longer has {PRINTER_INTERFACE}.get_devices(self) and printer_devices')
+
+    def apply(self):
+        interface = core('main').interfaces.get(PRINTER_INTERFACE)
+        if interface is None or interface.__module__ != f'{CORE_HANDLERS}.interfaces.PrinterInterface_L':
+            raise SeamError('core did not load its printer interface')
+        function = vars(interface)['get_devices']
+        if not getattr(function, 'viin_one_entry_per_printer', False):
+            interface.get_devices = functools.wraps(function)(_listing_without_duplicates(function))

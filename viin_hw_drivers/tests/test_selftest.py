@@ -7,7 +7,9 @@ import socket
 import subprocess
 import tempfile
 import threading
+import time
 import types
+from pathlib import Path
 from unittest import mock
 
 import common
@@ -25,14 +27,13 @@ VIINDOO_NAME = 'k3x9.iot.viindoo.example'
 VENDOR_ZONE = '*.vendor-zone.example'
 NAME_IN_THE_VENDOR_ZONE = '192-168-1-50.vendor-zone.example'
 NAME_ENDS = '2027-01-31T00:00:00Z'
-# The end dates of the certificate the web server serves and of the pair installed for the Viindoo name, far enough
-# away that neither is ending, and different so that a line cannot name the wrong one by accident.
+# The end date of the certificate the web server serves, far enough away that it is not ending.
 INSTALLED_ENDS = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=400)).strftime(
-    '%Y-%m-%dT%H:%M:%SZ')
-NAME_PAIR_ENDS = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=300)).strftime(
     '%Y-%m-%dT%H:%M:%SZ')
 DAY = datetime.timedelta(days=1)
 EARLIER_ADDRESS = '10.11.12.1'
+# The address of the box on its own access point, as core's access point script gives it.
+ACCESS_POINT_ADDRESS = '10.11.12.1'
 WIFI_PASSWORD = 'box-suite-wifi-password-4R7'
 WIFI_JOIN = '/hw_posbox_homepage/update_wifi'
 WIFI_FORGET = '/hw_posbox_homepage/wifi_clear'
@@ -157,6 +158,70 @@ class TestNetworkLine(SelfTestCase):
     def test_box_with_an_address_and_a_router_has_its_network_in_order(self):
         with box.network({'eth0': SITE_ADDRESS}, gateway=ROUTER):
             self.assertEqual(self.lines()['network'][0], 'ok')
+
+    def test_box_on_its_access_point_alone_asks_for_a_network(self):
+        with box.network({'wlan0': ACCESS_POINT_ADDRESS}):
+            line = self.line('network')
+
+        self.assertEqual((line['state'], line['reason'], line['details']['kind']),
+                         ('warning', 'access_point', 'access_point'))
+
+    def test_box_on_a_cable_whose_access_point_still_serves_is_on_the_cable(self):
+        with box.network({'eth0': SITE_ADDRESS, 'wlan0': ACCESS_POINT_ADDRESS}, gateway=ROUTER):
+            line = self.line('network')
+
+        self.assertEqual((line['state'], line['reason'], line['details']['kind']), ('ok', 'wired', 'wired'))
+
+
+class TestNetworkLineAfterAJoin(SelfTestCase):
+    """The Network line tells why the latest join of a Wi-Fi network from the page failed, while it is the latest."""
+
+    def note_join(self, result, ssid='Workshop'):
+        """The latest join asked comes to `result`, as the record of the box says it."""
+        wifi = common.layer('wifi')
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix='box-suite-')))
+        self.enterContext(mock.patch.object(wifi, 'LAST_JOIN', directory / 'last-join.json'))
+        wifi.LAST_JOIN.write_text(json.dumps({'ssid': ssid, 'result': result, 'at': time.time()}))
+
+    def test_box_that_could_not_join_for_its_password_warns_beside_a_network_it_is_not_on(self):
+        self.note_join('password_refused')
+        with box.network({'wlan0': ACCESS_POINT_ADDRESS}):
+            line = self.line('network')
+
+        self.assertEqual((line['state'], line['reason'], line['action'], line['details']['join_ssid']),
+                         ('warning', 'join_password_refused', 'join_wifi', 'Workshop'))
+
+    def test_box_that_could_not_reach_the_network_warns_beside_a_network_it_is_not_on(self):
+        self.note_join('not_reached')
+        with box.network({'wlan0': ACCESS_POINT_ADDRESS}):
+            line = self.line('network')
+
+        self.assertEqual((line['state'], line['reason'], line['details']['join_ssid']),
+                         ('warning', 'join_not_reached', 'Workshop'))
+
+    def test_box_on_a_cable_still_warns_while_its_latest_join_failed(self):
+        self.note_join('not_reached')
+        with box.network({'eth0': SITE_ADDRESS}, gateway=ROUTER):
+            line = self.line('network')
+
+        self.assertEqual((line['state'], line['reason']), ('warning', 'join_not_reached'))
+
+    def test_box_whose_latest_join_did_not_fail_keeps_the_line_it_had(self):
+        for result in ('joined', 'busy'):
+            with self.subTest(result):
+                self.note_join(result)
+                with box.network({'eth0': SITE_ADDRESS}, gateway=ROUTER):
+                    line = self.line('network')
+
+                self.assertEqual((line['state'], line['reason']), ('ok', 'wired'))
+
+    def test_page_data_holds_the_latest_join_and_none_before_any(self):
+        self.assertIsNone(self.request(box.STATUS).get_json()['network']['last_join'])
+        self.note_join('password_refused')
+
+        record = self.request(box.STATUS).get_json()['network']['last_join']
+
+        self.assertEqual((record['ssid'], record['result']), ('Workshop', 'password_refused'))
 
 
 class TestServerLines(SelfTestCase):
@@ -369,75 +434,22 @@ class TestBrowserAddressLine(SelfTestCase):
 
     def healthy_line_for(self, source, address, installed_kind):
         """The line of a box that serves a certificate of `installed_kind` and gives browsers `address` of `source`."""
-        return self.line_for(source, address, installed_kind, INSTALLED_ENDS, NAME_PAIR_ENDS)
+        return self.line_for(source, address, installed_kind, INSTALLED_ENDS)
 
-    def line_for(self, source, address, installed_kind, installed_ends, name_ends):
-        """The line of a box that gives browsers `address` of `source`, serves a certificate of `installed_kind`
-        issued for that address and ending at `installed_ends`, and holds a pair of the Viindoo name whose
-        certificate ends at `name_ends`, or one it cannot read when None."""
+    def line_for(self, source, address, installed_kind, installed_ends):
+        """The line of a box that gives browsers `address` of `source` and serves a certificate of `installed_kind`
+        issued for that address and ending at `installed_ends`."""
         trust, identity = common.layer('trust'), common.layer('seams.identity')
         installed = {'kind': installed_kind, 'expiry': installed_ends, 'subject': 'CN=box', 'names': [address]}
-        name = None if name_ends is None else dict(installed, expiry=name_ends)
         chosen = {'address': address, 'source': source, 'core': address}
         with mock.patch.object(trust, 'box_certificate', return_value=installed), \
-                mock.patch.object(trust, 'name_certificate', return_value=name), \
                 mock.patch.object(identity, 'reported_address', return_value=chosen):
             return self.address_line()
 
-    def viindoo_name_line(self, installed_kind='box', installed_ends=INSTALLED_ENDS, name_ends=NAME_PAIR_ENDS):
-        """`line_for` a box that gives browsers its Viindoo name: (state, reason, action), and the line."""
-        line = self.line_for('viindoo_name', VIINDOO_NAME, installed_kind, installed_ends, name_ends)
-        return (line['state'], line['reason'], line['action']), line
-
-    def test_viindoo_name_whose_certificate_ended_fails_and_asks_for_a_restart(self):
-        name_ended = ends_in(-1)
-        cases = {'own certificate valid': INSTALLED_ENDS, 'own certificate ended': ends_in(-2)}
-        for case, installed_ends in cases.items():
-            with self.subTest(case):
-                verdict, line = self.viindoo_name_line(installed_ends=installed_ends, name_ends=name_ended)
-
-                self.assertEqual(verdict, ('failed', 'certificate_expired', 'restart_box'))
-                self.assertEqual(
-                    (line['details'].get('certificate_kind'), line['details'].get('certificate_ends')),
-                    ('viindoo_name', name_ended))
-
-    def test_viindoo_name_whose_certificate_cannot_be_read_is_warned_about_and_asks_for_a_restart(self):
-        verdict, _line = self.viindoo_name_line(name_ends=None)
-
-        self.assertEqual(verdict, ('warning', 'name_certificate_unreadable', 'restart_box'))
-
-    def test_viindoo_name_box_whose_own_certificate_ended_warns_for_browsers_that_open_it_by_its_address(self):
-        cases = {'certificate the box made': ('box', 'restart_box'),
-                 'certificate of the customer': ('customer', 'renew_own_certificate')}
-        for case, (installed_kind, action) in cases.items():
-            with self.subTest(case):
-                verdict, _line = self.viindoo_name_line(installed_kind, installed_ends=ends_in(-1))
-
-                self.assertEqual(verdict, ('warning', 'address_certificate_expired', action))
-
-    def test_viindoo_name_box_whose_own_certificate_ends_soon_warns_for_browsers_that_open_it_by_its_address(self):
-        cases = {'certificate the box made': ('box', 'restart_box'),
-                 'certificate of the customer': ('customer', 'renew_own_certificate')}
-        for case, (installed_kind, action) in cases.items():
-            with self.subTest(case):
-                verdict, _line = self.viindoo_name_line(installed_kind, installed_ends=ends_in(10))
-
-                self.assertEqual(verdict, ('warning', 'address_certificate_ending', action))
-
-    def test_viindoo_name_whose_certificate_is_valid_is_in_order_until_the_end_of_that_certificate(self):
-        for case, name_ends in {'ends in a year': ends_in(365), 'ends in ten days': ends_in(10)}.items():
-            with self.subTest(case):
-                verdict, line = self.viindoo_name_line(name_ends=name_ends)
-
-                self.assertEqual(verdict, ('ok', 'viindoo_name', ''))
-                self.assertEqual(
-                    (line['details'].get('certificate_kind'), line['details'].get('certificate_ends')),
-                    ('viindoo_name', name_ends))
-
     def test_certificate_of_the_image_is_warned_about_whatever_address_browsers_are_given(self):
-        for source, address in {'viindoo_name': VIINDOO_NAME, 'address': SITE_ADDRESS}.items():
+        for source, address in {'own_name': OWN_NAME, 'address': SITE_ADDRESS}.items():
             with self.subTest(source):
-                line = self.line_for(source, address, 'shipped', INSTALLED_ENDS, NAME_PAIR_ENDS)
+                line = self.line_for(source, address, 'shipped', INSTALLED_ENDS)
 
                 self.assertEqual((line['state'], line['reason'], line['action']),
                                  ('warning', 'shared_certificate', 'restart_box'))
@@ -453,7 +465,7 @@ class TestBrowserAddressLine(SelfTestCase):
         }
         for case, (installed_kind, installed_ends, expected) in cases.items():
             with self.subTest(case):
-                line = self.line_for('address', SITE_ADDRESS, installed_kind, installed_ends, ends_in(-1))
+                line = self.line_for('address', SITE_ADDRESS, installed_kind, installed_ends)
 
                 self.assertEqual((line['state'], line['reason'], line['action']), expected)
 
@@ -461,7 +473,6 @@ class TestBrowserAddressLine(SelfTestCase):
         cases = {
             'certificate the box made': ('address', SITE_ADDRESS, 'box', ('box', INSTALLED_ENDS)),
             'certificate of the customer': ('own_name', OWN_NAME, 'customer', ('customer', INSTALLED_ENDS)),
-            'certificate of the Viindoo name': ('viindoo_name', VIINDOO_NAME, 'box', ('viindoo_name', NAME_PAIR_ENDS)),
         }
         for case, (source, address, installed_kind, expected) in cases.items():
             with self.subTest(case):
@@ -470,7 +481,7 @@ class TestBrowserAddressLine(SelfTestCase):
                 self.assertEqual(line['state'], 'ok', line)
                 self.assertEqual((line['details']['certificate_kind'], line['details']['certificate_ends']), expected)
 
-    def test_certificate_the_web_server_refused_to_take_asks_for_a_restart_only_of_browsers_that_get_it(self):
+    def test_certificate_the_web_server_refused_to_take_asks_for_a_restart(self):
         trust = common.layer('trust')
         self.keep_web_certificate()
         # A look that serves what the box holds leaves nothing waiting for the web server after the test.
@@ -480,15 +491,10 @@ class TestBrowserAddressLine(SelfTestCase):
         with box.network({'eth0': SITE_ADDRESS}), common.failing('nginx'), \
                 self.assertRaises((OSError, subprocess.SubprocessError)):
             trust.refresh_box_certificate()
-        cases = {
-            'the Viindoo name': ('viindoo_name', VIINDOO_NAME, ['ok', 'viindoo_name', '']),
-            'an address of the site': ('address', SITE_ADDRESS, ['warning', 'certificate_not_served', 'restart_box']),
-        }
-        for case, (source, address, expected) in cases.items():
-            with self.subTest(case):
-                line = self.healthy_line_for(source, address, 'box')
+        line = self.healthy_line_for('address', SITE_ADDRESS, 'box')
 
-                self.assertEqual([line['state'], line['reason'], line['action']], expected)
+        self.assertEqual([line['state'], line['reason'], line['action']],
+                         ['warning', 'certificate_not_served', 'restart_box'])
 
     def own_names(self, *addresses):
         host = socket.gethostname()
@@ -615,7 +621,7 @@ class TestBrowserAddressLine(SelfTestCase):
 
     def test_line_answers_a_state_with_an_instruction_whatever_name_it_is_given(self):
         identity = common.layer('seams.identity')
-        for kind in ('own_name', 'viindoo_name', 'address', 'local_name'):
+        for kind in ('own_name', 'address', 'local_name'):
             chosen = {'address': NAME_IN_THE_VENDOR_ZONE, 'source': kind, 'core': NAME_IN_THE_VENDOR_ZONE}
             with self.subTest(kind=kind), mock.patch.object(identity, 'reported_address', return_value=chosen):
                 line = self.address_line()
@@ -822,6 +828,19 @@ class TestWifiNetworkInTheDiagnosticFile(common.BoxCase):
 
         kept_wifi, _response = self.kept_wifi()
         self.assertIs(kept_wifi['card_copy'], False)
+
+    def test_page_data_tells_a_network_is_kept_only_while_one_is(self):
+        def card_copy():
+            return self.request(box.STATUS).get_json()['kept_wifi']['card_copy']
+
+        self.network.change(networks={'Workshop': WIFI_PASSWORD})
+        self.assertIs(card_copy(), False)
+
+        self.join('Workshop')
+        self.assertIs(card_copy(), True)
+
+        self.request(WIFI_FORGET)
+        self.assertIs(card_copy(), False)
 
     def test_diagnostic_file_is_whole_when_nmcli_fails_or_is_missing(self):
         wifi_common.put_on_the_card(self.card, self.network.hold_profile(WIFI_PROFILE, 'Workshop', None))

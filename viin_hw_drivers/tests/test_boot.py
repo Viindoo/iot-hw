@@ -1,5 +1,9 @@
 """The gate: how the layer takes its place when the box starts, and where the suite itself may run."""
+import builtins
+import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -16,6 +20,42 @@ GATE_SEAMS = {1, 2, 3, 10, 12, 18}
 # The file of the layer that holds the threads of core while the layer takes its place.
 GATE_FILE = 'seams.startup'
 PING = common.PING
+# The module of core that drives receipt printers itself; the box service imports it after the layer, and it imports
+# the USB library as it is imported.
+RECEIPT_PRINTER_MODULE = 'odoo.addons.hw_escpos.controllers.main'
+# Seconds. How long either side of a start in step waits for the other one, at the most.
+STEP_WAIT = 60
+
+
+def start_report_in_step_with_the_usb_library():
+    """`start_report` of a box where the device thread of core starts to import the USB library just before the box
+    service does, for the receipt printer module of core: what a slow board, a Raspberry Pi, may do at any start.
+
+    The device thread waits, at the start of the import, until the box service imports the library too, then a
+    moment more. The report adds 'failed_handler_files', the handler files the box could not load, and
+    'receipt_printer_module': whether the box service has that module.
+    """
+    import_ = builtins.__import__
+    device_thread_imports, service_imports = threading.Event(), threading.Event()
+
+    def in_step(name, globals_=None, locals_=None, fromlist=(), level=0):
+        main = threading.current_thread() is threading.main_thread()
+        if not level and not main and name == 'usb._version' and not device_thread_imports.is_set():
+            # The first import the package of the library makes.
+            device_thread_imports.set()
+            service_imports.wait(STEP_WAIT)
+            time.sleep(1)
+        elif not level and main and name == 'usb.core' and 'usb.core' not in sys.modules and \
+                '/hw_escpos/' in ((globals_ or {}).get('__file__') or ''):
+            device_thread_imports.wait(STEP_WAIT)
+            service_imports.set()
+        return import_(name, globals_, locals_, fromlist, level)
+
+    builtins.__import__ = in_step
+    report = common.start_report()
+    report['failed_handler_files'] = common.layer('seams.handlers').handler_files()['failed']
+    report['receipt_printer_module'] = RECEIPT_PRINTER_MODULE in sys.modules
+    return report
 
 
 class TestDocumentedOrder(common.BoxStateCase):
@@ -37,6 +77,15 @@ class TestDocumentedOrder(common.BoxStateCase):
 
     def test_box_without_a_server_contacts_no_host_but_the_publisher_of_its_software_when_it_starts(self):
         self.assertLessEqual(set(self.started_box()['asked']), {common.SOFTWARE_PUBLISHER})
+
+
+class TestUsbLibraryImportedByCoreAndByTheBoxServiceAtOnce(common.BoxStateCase):
+
+    def test_box_keeps_its_usb_devices_and_its_receipt_printer_module_whichever_imports_the_usb_library_first(self):
+        started = common.in_new_process(start_report_in_step_with_the_usb_library)
+
+        self.assertEqual(started['failed_handler_files'], [])
+        self.assertTrue(started['receipt_printer_module'])
 
 
 class TestStartOfABoxThatHasAServer(common.BoxStateCase):

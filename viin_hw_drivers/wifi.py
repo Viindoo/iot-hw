@@ -21,6 +21,7 @@ to the network it keeps. Neither changes the Wi-Fi while a join holds LOCK, and
 a join is not started while either holds it.
 """
 import fcntl
+import json
 import logging
 import os
 import re
@@ -111,6 +112,15 @@ RESTART_DELAY = 1
 # this often, until it lists access points or this long has passed.
 HEARING_WAIT = 15
 HEARING_PERIOD = 1
+# What a join comes to: the value `last_join` gives as 'result', and the reason a page tells. The box service restarts
+# once a join is over, so the latest one is noted in a file of /run/odoo, which a restart keeps and a start of the box
+# empties: {'ssid', 'result', 'at': seconds since the epoch}.
+JOINED, PASSWORD_REFUSED, NOT_REACHED, BUSY = 'joined', 'password_refused', 'not_reached', 'busy'
+RESULTS = (JOINED, PASSWORD_REFUSED, NOT_REACHED, BUSY)
+LAST_JOIN = Path('/run/odoo/viin-wifi-join.json')
+# What nmcli prints, in NMCLI_LOCALE, when the password was refused: NetworkManager's handshake with the access point
+# failed and it found no other password to try.
+PASSWORD_REFUSED_BY = re.compile(r'Secrets were required|4-way handshake|activation failed: \(7\)', re.IGNORECASE)
 # One join runs at a time; of those asked meanwhile, the last one asked is the one that runs.
 _joining = threading.Lock()
 _asked = threading.Lock()
@@ -152,7 +162,7 @@ def _plain(value):
 def join(name, password, keep):
     """Start to join the network `name` with `password` in a thread of its own; keep it when `keep` and it is joined.
     Whether the join starts: it does not while `viin-box-wifi` changes the Wi-Fi of the box, which it is
-    given HOLD_WAIT seconds to finish.
+    given HOLD_WAIT seconds to finish; that is noted as BUSY.
 
     The caller checked both with `refusal`. The join holds LOCK from now until
     it ends: that program, which restarts the box service once it has brought
@@ -164,6 +174,7 @@ def join(name, password, keep):
     global _last_asked, _pending
     with _asked:
         if not _hold_wifi():
+            _note_join(name, BUSY)
             return False
         _last_asked += 1
         _pending += 1
@@ -172,6 +183,30 @@ def join(name, password, keep):
     threading.Thread(target=_join_when_due, args=(number, name, password, forgets if keep else None),
                      name='viin-wifi-join', daemon=True).start()
     return True
+
+
+def last_join():
+    """{'ssid', 'result', 'at'} of the latest join asked since the box started, `result` one of RESULTS; None when
+    there is none, or its record cannot be read."""
+    try:
+        record = json.loads(LAST_JOIN.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if (isinstance(record, dict) and isinstance(record.get('ssid'), str) and record.get('result') in RESULTS
+            and isinstance(record.get('at'), (int, float))):
+        return {key: record[key] for key in ('ssid', 'result', 'at')}
+    return None
+
+
+def _note_join(name, result):
+    """Note in LAST_JOIN that the join of `name` came to `result`. Never raises: a join does not depend on its note."""
+    staged = LAST_JOIN.with_name(f'.{LAST_JOIN.name}.new')
+    try:
+        with os.fdopen(os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w', encoding='utf-8') as record:
+            json.dump({'ssid': name, 'result': result, 'at': time.time()}, record)
+        os.replace(staged, LAST_JOIN)
+    except OSError:
+        _logger.warning('The box could not note the result of its join of a Wi-Fi network', exc_info=True)
 
 
 def _join_when_due(number, name, password, keep):
@@ -239,6 +274,7 @@ def _join(name, password, keep):
 def _join_alone(name, password, keep):
     if not (INTERFACES / INTERFACE).exists():
         _logger.warning('The box has no Wi-Fi interface: it joins no Wi-Fi network')
+        _note_join(name, NOT_REACHED)
         return
     from_access_point = _on_access_point()
     if from_access_point:
@@ -247,7 +283,9 @@ def _join_alone(name, password, keep):
         _sudo('ip', 'address', 'del', ACCESS_POINT[0], 'dev', ACCESS_POINT[1])
         _nmcli('general', 'reload')
     _nmcli('connection', 'delete', 'id', TRIAL_PROFILE)
-    if _try(name, password, HEARING_WAIT if from_access_point else 0):
+    result = _try(name, password, HEARING_WAIT if from_access_point else 0)
+    _note_join(name, result)
+    if result == JOINED:
         _nmcli('connection', 'delete', 'id', PROFILE)
         # Joined: NetworkManager may now join it again by itself whenever the box loses it.
         _nmcli('connection', 'modify', 'id', TRIAL_PROFILE, 'connection.id', PROFILE, 'connection.autoconnect', 'yes')
@@ -256,9 +294,13 @@ def _join_alone(name, password, keep):
             _keep_unless_forgotten(keep)
     else:
         _nmcli('connection', 'delete', 'id', TRIAL_PROFILE)
-        _logger.warning('The box could not join the Wi-Fi network %s', name)
-        if not _nmcli('--wait', str(JOIN_WAIT), 'connection', 'up', 'id', PROFILE, 'ifname', INTERFACE):
-            if not _addresses():
+        # The reason is chosen among fixed words: nothing derived from the password reaches the log.
+        why = 'the password was refused' if result == PASSWORD_REFUSED else 'the network did not answer'
+        _logger.warning('The box could not join the Wi-Fi network %s: %s', name, why)
+        # A box that kept no network has no profile to bring up again.
+        held = _profile_held()
+        if not (held and _nmcli('--wait', str(JOIN_WAIT), 'connection', 'up', 'id', PROFILE, 'ifname', INTERFACE)):
+            if held and not _addresses():
                 # In /etc alone, which lives in memory: the copy kept on the card is left as it is for the next start.
                 _nmcli('connection', 'modify', 'id', PROFILE, 'connection.autoconnect', 'no')
             subprocess.Popen(['sudo', '-n', file_path(ACCESS_POINT_SCRIPT), 'force'], start_new_session=True,
@@ -268,7 +310,8 @@ def _join_alone(name, password, keep):
 
 
 def _try(name, password, hearing_wait=0):
-    """Whether the box joined the network `name` with `password`, as the profile TRIAL_PROFILE.
+    """JOINED when the box joined the network `name` with `password`, as the profile TRIAL_PROFILE; else
+    PASSWORD_REFUSED when NetworkManager had the password refused, else NOT_REACHED.
 
     The profile holds the name and how the network is protected, as
     NetworkManager would complete them from the access point heard with the
@@ -291,14 +334,27 @@ def _try(name, password, hearing_wait=0):
         bssid, settings, protection = heard[0], (), _protection(*heard[1:])
         if protection is None:
             _logger.warning('The Wi-Fi network %s asks for more than a password: the box does not join it', name)
-            return False
+            return NOT_REACHED
     added = _nmcli('connection', 'add', 'type', 'wifi', 'con-name', TRIAL_PROFILE, 'connection.autoconnect', 'no',
                    '802-11-wireless.ssid', name, *settings, *protection[0])
     up = ['--wait', str(JOIN_WAIT), 'connection', 'up', 'id', TRIAL_PROFILE, 'ifname', INTERFACE]
     up += ['ap', bssid] if bssid else []
+    if not added:
+        return NOT_REACHED
     if not (password and protection[1]):
-        return added and _nmcli(*up)
-    return added and _nmcli(*up, 'passwd-file', SECRETS_FILE, given=_secret_line(protection[1], password))
+        return _attempt(*up)
+    return _attempt(*up, 'passwd-file', SECRETS_FILE, given=_secret_line(protection[1], password))
+
+
+def _attempt(*arguments, given=None):
+    """JOINED when `nmcli` with `arguments`, `given` on its standard input, joined a network; else the reason it did
+    not, from what nmcli printed. What it printed is read, never kept."""
+    stdin = {'stdin': subprocess.DEVNULL} if given is None else {'input': given.encode()}
+    done = subprocess.run(['sudo', '-n', 'nmcli', *arguments], **stdin, stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, env=_nmcli_environment(), check=False)
+    if not done.returncode:
+        return JOINED
+    return PASSWORD_REFUSED if PASSWORD_REFUSED_BY.search(done.stdout.decode(errors='replace')) else NOT_REACHED
 
 
 def _protection(security, wpa_flags, rsn_flags):
@@ -475,6 +531,14 @@ def _addresses():
     shown = subprocess.run(['hostname', '-I'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                            stderr=subprocess.DEVNULL, check=False)
     return shown.stdout.decode(errors='replace').split()
+
+
+def _profile_held():
+    """Whether NetworkManager holds PROFILE."""
+    listed = subprocess.run(['sudo', '-n', 'nmcli', '-t', '-g', 'NAME', 'connection', 'show'],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            env=_nmcli_environment(), check=False)
+    return PROFILE in listed.stdout.decode(errors='replace').splitlines()
 
 
 def _on_access_point():

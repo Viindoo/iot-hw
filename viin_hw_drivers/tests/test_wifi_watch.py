@@ -8,8 +8,10 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import common
@@ -31,6 +33,8 @@ WEB_SERVER, BOX_SERVICE = 'web server', 'box service'
 STATUS = '/viin_hw/status'
 LOGS = '/hw_posbox_homepage/iot_logs'
 MINUTE = 60
+# How long a box without any address waits before its access point starts.
+ACCESS_POINT_AFTER = 10 * MINUTE
 # How long a router takes to restart, at most: the box must not start its access point meanwhile.
 ROUTER_RESTART = 5 * MINUTE
 # The longest the box waits on its access point before it tries the network it keeps again.
@@ -126,29 +130,146 @@ class TestBoxOffTheNetworkItKeeps(WatchCase):
         self.assertEqual(self.network.access_point_starts(), [])
 
 
+class TestBoxWithNoAddressOnAnyNetwork(WatchCase):
+    """The setup network (the access point) is the way in for a person: it comes after ten minutes without any
+    address, whether the box keeps a Wi-Fi network or not, and never serves beside an address."""
+
+    def assertSetupNetworkAtTenMinutes(self):
+        self.network.change(networks={}, addresses='')
+
+        self.watch.looks(0, ACCESS_POINT_AFTER)
+        self.assertEqual(self.network.access_point_starts(), [], 'the setup network came before ten minutes')
+        self.assertFalse(self.network.world()['access_point_running'])
+        self.watch.look(ACCESS_POINT_AFTER)
+
+        self.assertEqual(self.network.access_point_starts(), [['force']])
+        self.assertTrue(self.network.world()['access_point_running'])
+
+    def assertSetupNetworkGoneOnceACableReturns(self):
+        self.network.change(addresses=f'{ACCESS_POINT_ADDRESS} {SITE_ADDRESS}')
+
+        self.watch.looks(ACCESS_POINT_AFTER + 10, ACCESS_POINT_AFTER + 80)
+
+        world = self.network.world()
+        self.assertEqual((world['access_point_running'], world['on_access_point']), (False, False))
+
+    def test_box_that_keeps_no_network_offers_the_setup_network_at_ten_minutes_and_not_before(self):
+        self.assertSetupNetworkAtTenMinutes()
+
+    def test_box_that_keeps_a_network_out_of_reach_offers_the_setup_network_at_ten_minutes_and_not_before(self):
+        self.keep()
+
+        self.assertSetupNetworkAtTenMinutes()
+
+    def test_setup_network_of_a_box_that_keeps_no_network_goes_within_70_seconds_of_a_cable_address(self):
+        self.assertSetupNetworkAtTenMinutes()
+
+        self.assertSetupNetworkGoneOnceACableReturns()
+
+    def test_setup_network_of_a_box_that_keeps_a_network_goes_within_70_seconds_of_a_cable_address(self):
+        self.keep()
+        self.assertSetupNetworkAtTenMinutes()
+
+        self.assertSetupNetworkGoneOnceACableReturns()
+
+    def test_box_that_keeps_no_network_never_offers_the_setup_network_beside_a_cable_address(self):
+        self.network.change(networks={}, addresses=SITE_ADDRESS)
+
+        self.watch.looks(0, 2 * 60 * MINUTE)
+
+        self.assertEqual(self.network.access_point_starts(), [])
+        self.assertFalse(self.network.world()['access_point_running'])
+
+    def test_box_that_keeps_a_network_out_of_reach_offers_the_setup_network_ten_minutes_after_its_cable_is_pulled(self):
+        self.keep()
+        self.network.change(networks={}, addresses=SITE_ADDRESS)
+        self.watch.looks(0, 500)
+
+        self.network.change(addresses='')
+        self.watch.looks(500, 500 + ACCESS_POINT_AFTER)
+        self.assertEqual(self.network.access_point_starts(), [])
+        self.watch.look(500 + ACCESS_POINT_AFTER)
+
+        self.assertEqual(self.network.access_point_starts(), [['force']])
+
+    def test_cable_address_that_returns_starts_the_ten_minutes_anew(self):
+        self.network.change(networks={}, addresses='')
+        self.watch.looks(0, 500)
+        self.network.change(addresses=SITE_ADDRESS)
+        self.watch.looks(500, 600)
+
+        self.network.change(addresses='')
+        self.watch.looks(600, 600 + ACCESS_POINT_AFTER)
+        self.assertEqual(self.network.access_point_starts(), [])
+        self.watch.look(600 + ACCESS_POINT_AFTER)
+
+        self.assertEqual(self.network.access_point_starts(), [['force']])
+
+
+class TestStartOfABoxThatKeepsNoNetwork(WatchCase):
+    """`viin-box-wifi` as the box starts, just before core's script decides on the access point: that script starts it
+    unless the box has an address, and waits for none when the box keeps no network."""
+
+    def plug(self, carrier):
+        """The network cable of the box, plugged in when `carrier` is '1'."""
+        cables = Path(tempfile.mkdtemp(prefix='box-suite-cables-'))
+        self.addCleanup(shutil.rmtree, cables, ignore_errors=True)
+        (cables / 'eth0').mkdir()
+        (cables / 'eth0' / 'carrier').write_text(f'{carrier}\n')
+        self.enterContext(mock.patch.object(self.watch.program, 'INTERFACES', cables))
+
+    def start_and_run_core_script(self):
+        """Run the program, then core's script as rc.local does; give how long the program took."""
+        began = time.monotonic()
+        self.watch.program.main()
+        took = time.monotonic() - began
+        subprocess.run([str(self.network.programs / 'wireless_ap.sh')], env=self.network.environment(), check=True,
+                       timeout=common.PROCESS_TIMEOUT)
+        return took
+
+    def test_box_on_a_cable_starts_no_access_point_although_the_router_gives_its_address_a_few_seconds_late(self):
+        self.plug('1')
+        router = threading.Timer(3, self.network.change, kwargs={'addresses': SITE_ADDRESS})
+        router.start()
+        self.addCleanup(router.cancel)
+
+        self.start_and_run_core_script()
+
+        self.assertFalse(self.network.world()['access_point_running'])
+
+    def test_box_without_a_cable_starts_its_access_point_without_waiting(self):
+        self.plug('0')
+
+        took = self.start_and_run_core_script()
+
+        self.assertTrue(self.network.world()['access_point_running'])
+        self.assertLess(took, 5)
+
+
 class TestNetworkForgotten(WatchCase):
 
     def test_network_forgotten_is_no_longer_looked_for(self):
+        # A box left without an address offers the setup network once, as a box that keeps no network does.
         cases = {
-            'box off the network': lambda: (self.keep(blocked=True), self.network.change(addresses='')),
-            'box on its access point': lambda: (
-                self.keep(autoconnect=False), self.network.change(on_access_point=True, access_point_running=True)),
+            'box off the network': (lambda: (self.keep(blocked=True), self.network.change(addresses='')), 1),
+            'box on its access point': (lambda: (
+                self.keep(autoconnect=False), self.network.change(on_access_point=True, access_point_running=True)), 0),
         }
-        for case, arrange in cases.items():
+        for case, (arrange, setup_networks) in cases.items():
             with self.subTest(case):
                 self.network.change(networks={'Workshop': PASSWORD}, active=None, active_ssid=None)
                 self.watch.start_again()
                 arrange()
                 # The box page removes the copy on the card; the profile in /etc stays until the box restarts.
                 self.watch.card_copy.unlink(missing_ok=True)
-                looked = len(self.watch.history)
+                looked, started = len(self.watch.history), len(self.network.access_point_starts())
 
                 self.watch.looks(0, 30 * MINUTE)
 
                 changes = [call for _at, call in self.watch.history[looked:]
-                           if 'up' in call or 'scan' in call or call[-2:] == ['hostapd', 'stop']
-                           or 'wireless_ap.sh' in call[0]]
+                           if 'up' in call or 'scan' in call or call[-2:] == ['hostapd', 'stop']]
                 self.assertEqual(changes, [])
+                self.assertEqual(len(self.network.access_point_starts()) - started, setup_networks)
                 self.assertIsNone(self.network.world()['active'])
 
 
@@ -399,6 +520,39 @@ class TestBoxOnItsAccessPoint(WatchCase):
                     (world['access_point_running'], world['on_access_point'], world['dnsmasq_running']),
                     (serves, serves, serves))
                 self.assertEqual(self.network.access_point_starts(), [])
+
+    def test_box_that_keeps_no_network_stops_its_access_point_on_a_cable_unless_somebody_sets_the_box_up(self):
+        cases = {
+            'nobody connected': (lambda: None, False),
+            'person who uses the box page through the access point': (lambda: (
+                self.network.change(stations=[STATION]), self.lease(int(time.time()) + 3600),
+                self.uses_the_page(STATION_ADDRESS)), True),
+        }
+        for case, (arrange, serves) in cases.items():
+            with self.subTest(case):
+                # A new box, never given a Wi-Fi network: core's script started the access point as the box started,
+                # before the router gave the cable its address.
+                (self.network.profiles / f'{PROFILE}.nmconnection').unlink(missing_ok=True)
+                self.watch.card_copy.unlink(missing_ok=True)
+                self.network.change(networks={}, on_access_point=True, access_point_running=True,
+                                    dnsmasq_running=True, stations=[], addresses=ACCESS_POINT_ADDRESS)
+                self.watch.start_again()
+                self.box_service_started()
+                self.watch.look(0)
+                arrange()
+                self.network.change(addresses=f'{ACCESS_POINT_ADDRESS} {SITE_ADDRESS}')
+                looked = len(self.watch.history)
+
+                self.watch.looks(MINUTE, 30 * MINUTE if serves else 2 * MINUTE)
+
+                world = self.network.world()
+                self.assertEqual(
+                    (world['access_point_running'], world['on_access_point'], world['dnsmasq_running']),
+                    (serves, serves, serves))
+                self.assertEqual(self.network.access_point_starts(), [])
+                # Nothing is kept: the box neither listens for a network nor joins one.
+                self.assertEqual([call for _at, call in self.watch.history[looked:]
+                                  if (call[:1] == ['iw'] and 'scan' in call) or 'up' in call], [])
 
     def test_join_that_fails_from_the_access_point_starts_it_again_and_is_tried_less_and_less_often(self):
         self.network.change(networks={'Workshop': 'password-changed-on-the-router'})

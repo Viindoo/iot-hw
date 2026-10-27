@@ -1270,19 +1270,6 @@ def box_certificate():
     return found
 
 
-def name_certificate():
-    """The certificate of the Viindoo name the web server presents for it: the keys of `describe`.
-
-    Read from the pair installed for the name, which is where the web server reads it from. None when the
-    box holds no pair of the name or it cannot be read.
-    """
-    try:
-        found = load_certificates(_read_system_file(f'{NAME_PAIR_DIRECTORIES[0]}/{CURRENT}/fullchain.pem'))
-    except (OSError, subprocess.SubprocessError, TypeError):
-        return None
-    return describe(found[0]) if found else None
-
-
 def _host_matches(host, certificate):
     issued_for = [name.lower() for name in names(certificate)]
     with contextlib.suppress(ValueError):

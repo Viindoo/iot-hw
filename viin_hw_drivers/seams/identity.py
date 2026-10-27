@@ -30,7 +30,6 @@ LIVE_CHANNEL = f'{CORE}.websocket_client'
 
 # Where the address the box reports comes from, in the order it is chosen.
 OWN_NAME = 'own_name'            # the name the installer gave the box
-VIINDOO_NAME = 'viindoo_name'    # the name Viindoo issued for the box
 ADDRESS = 'address'              # an IPv4 address of the site's network
 LOCAL_NAME = 'local_name'        # the box has no such address: its name on the local network
 CORE_VALUE = 'core'              # the seam is not in place: what core computes
@@ -113,11 +112,12 @@ def _site_addresses():
 
 def _choose_address(core_value):
     helpers = _helpers()
-    for source, key in ((OWN_NAME, trust.BOX_ADDRESS_KEY), (VIINDOO_NAME, trust.MANAGED_NAME_KEY)):
-        # Spelled as the lock spells the names by which a browser reaches the box.
-        name = (helpers.get_conf(key) or '').strip().lower()
-        if browsable(name):
-            return {'address': name, 'source': source, 'core': core_value}
+    # Spelled as the lock spells the names by which a browser reaches the box. The name Viindoo issued for the box
+    # is not reported: a till reaches the box by its address on the site's network, which needs no name service,
+    # and the server keeps the name in the public name of the box.
+    name = (helpers.get_conf(trust.BOX_ADDRESS_KEY) or '').strip().lower()
+    if browsable(name):
+        return {'address': name, 'source': OWN_NAME, 'core': core_value}
     # Only an address: core derives a name from the certificate zone of its vendor, which the box never reports.
     if _is_ip_address(core_value) and browsable(core_value):
         return {'address': core_value, 'source': ADDRESS, 'core': core_value}
@@ -130,8 +130,8 @@ def _choose_address(core_value):
 def reported_address():
     """The address the box reports to its server, which the server hands to browsers.
 
-    {'address', 'source', 'core'}: `source` is OWN_NAME, VIINDOO_NAME, ADDRESS,
-    LOCAL_NAME, or CORE_VALUE when seam 7 is not in place; `core` is the value
+    {'address', 'source', 'core'}: `source` is OWN_NAME, ADDRESS, LOCAL_NAME,
+    or CORE_VALUE when seam 7 is not in place; `core` is the value
     core computes, kept to show what was set aside.
     """
     manager = core('main').manager
@@ -283,8 +283,8 @@ class ReportedAddress(_HeldByManager):
     name = 'Manager._get_domain'
     parameters = ('self',)
     attribute = 'domain'
-    feature = ("the box reports the installer's own name, else its Viindoo name, else an address of the site's "
-               'network, and never one a browser cannot open')
+    feature = ("the box reports the installer's own name, else an address of the site's network - also while it "
+               'holds a Viindoo name - and never one a browser cannot open')
 
     def replacement(self, original):
         _originals['domain'] = original
