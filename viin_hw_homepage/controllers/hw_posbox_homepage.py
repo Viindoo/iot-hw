@@ -172,7 +172,12 @@ class BoxPage(homepage.IotBoxOwlHomePage):
         if name == BOX_LOGGER and value in BOX_LEVELS_NOT_OFFERED:
             _logger.warning('A box-wide log level that the box does not offer was refused')
             return dict(LEVEL_NOT_OFFERED)
-        return super().update_log_level(name, value)
+        answer = super().update_log_level(name, value)
+        if name == BOX_LOGGER:
+            # The web server logs every request under `werkzeug`, which the dialog offers no level for: it follows
+            # the box-wide level as it follows the box software's.
+            self._update_logger_level('werkzeug', value, homepage.AVAILABLE_LOG_LEVELS)
+        return answer
 
 
 class BoxIcon(http.Controller):

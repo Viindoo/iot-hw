@@ -56,7 +56,7 @@ export class LogLevelDialog extends Component {
                         <select t-if="item.info" t-att-id="'level-i-' + item_index" class="form-select form-select-sm" t-on-change="(event) => this.set('${INTERFACE}' + item.file, event.target.value)">
                             <option t-foreach="levels.interface" t-as="level" t-key="level" t-att-value="level" t-att-selected="level === item.current" t-esc="levelName(level)"/>
                         </select>
-                        <span t-else="" class="viin-muted small" t-esc="t('loglevel.not_started')"/>
+                        <span t-else="" class="viin-muted small" t-esc="t(item.silence)"/>
                     </div>
                 </div>
 
@@ -68,7 +68,7 @@ export class LogLevelDialog extends Component {
                         <select t-if="item.info" t-att-id="'level-d-' + item_index" class="form-select form-select-sm" t-on-change="(event) => this.set('${DRIVER}' + item.file, event.target.value)">
                             <option t-foreach="levels.driver" t-as="level" t-key="level" t-att-value="level" t-att-selected="level === item.current" t-esc="levelName(level)"/>
                         </select>
-                        <span t-else="" class="viin-muted small" t-esc="t('loglevel.not_started')"/>
+                        <span t-else="" class="viin-muted small" t-esc="t(item.silence)"/>
                     </div>
                 </div>
             </t>
@@ -94,24 +94,35 @@ export class LogLevelDialog extends Component {
         return has(`loglevel.level_${level}`) ? t(`loglevel.level_${level}`) : level;
     }
 
-    handlers(files, info) {
+    /* Why a handler file has no level to set: the box did not load it, it loaded it and the file defines no logger,
+     * or the box has not finished loading its files yet. */
+    silence(kind, file) {
+        const handlers = (store.status && store.status.drivers) || {};
+        if ((handlers.failed || []).some((failed) => failed.file === `${kind}/${file}`)) {
+            return "loglevel.not_loaded";
+        }
+        return handlers.loaded ? "loglevel.no_logger" : "loglevel.not_started";
+    }
+
+    handlers(kind, files, info) {
         return files.map((file) => {
             const found = info[file];
             return {
                 file,
                 name: file.replace(/\.py$/, ""),
                 info: Boolean(found),
+                silence: this.silence(kind, file),
                 current: found ? (found.is_using_parent_level ? "parent" : found.level) : "",
             };
         });
     }
 
     get interfaces() {
-        return this.handlers(this.state.data.interfaces_list || [], this.state.data.interfaces_logger_info || {});
+        return this.handlers("interfaces", this.state.data.interfaces_list || [], this.state.data.interfaces_logger_info || {});
     }
 
     get drivers() {
-        return this.handlers(this.state.data.drivers_list || [], this.state.data.drivers_logger_info || {});
+        return this.handlers("drivers", this.state.data.drivers_list || [], this.state.data.drivers_logger_info || {});
     }
 
     async load() {

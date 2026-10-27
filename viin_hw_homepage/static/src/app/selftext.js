@@ -1,6 +1,6 @@
 /* The words of the self-test: what a line says, and what to do about it. */
 
-import { SUPPORT_EMAIL } from "./links.js";
+import { SUPPORT_URL } from "./links.js";
 import { day, has, t, when } from "./i18n.js";
 
 function minutes(seconds) {
@@ -23,7 +23,7 @@ const TIMED = ["registration.accepted", "live_channel.connected", "live_channel.
 const ATTEMPTED = ["registration.refused", "registration.unreachable"];
 
 /* The addresses the box gives browsers when nothing is wrong with them. */
-const GIVEN_ADDRESS = ["own_name", "viindoo_name", "address", "name"];
+const GIVEN_ADDRESS = ["own_name", "address", "name"];
 
 /* A moment, as the reader's clock reads it, from the seconds the box says have passed since then; "" without them. */
 function momentAgo(age) {
@@ -40,6 +40,7 @@ function values(line) {
     return {
         address: details.address || "",
         ssid: details.ssid || "",
+        wifi: details.join_ssid || "",
         server: details.server || "",
         name: details.fqdn || "",
         zone: details.zone || "",
@@ -52,7 +53,7 @@ function values(line) {
         problem: details.problem || "",
         check: details.check || "",
         server_reason: details.server_reason || "",
-        support: SUPPORT_EMAIL,
+        support: SUPPORT_URL,
     };
 }
 
@@ -111,7 +112,7 @@ export function todo(line) {
     if (line.action === "apply_update" && !values(line).offered) {
         key += "_no_release";
     }
-    return has(key) ? t(key, values(line)) : t("action.unknown", { support: SUPPORT_EMAIL });
+    return has(key) ? t(key, values(line)) : t("action.unknown", { support: SUPPORT_URL });
 }
 
 export const STATE_CLASS = {

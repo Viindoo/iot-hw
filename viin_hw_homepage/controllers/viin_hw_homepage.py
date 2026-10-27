@@ -7,6 +7,7 @@ finds the queue at its next look at the printers and the server learns of the
 printer then. What the caller sends is never logged nor sent back.
 """
 import functools
+import inspect
 import ipaddress
 import logging
 import re
@@ -137,7 +138,8 @@ def _queue_name(base, mark, taken):
 def _printer_interface():
     """(core's printer interface, its print-server connection, the lock that serialises it), or None."""
     for interface in seams.core('main').interfaces.values():
-        namespace = getattr(getattr(interface, 'get_devices', None), '__globals__', {})
+        # The layer wraps `get_devices`: the connection is a name of the file of core that defines it.
+        namespace = getattr(inspect.unwrap(getattr(interface, 'get_devices', None)), '__globals__', {})
         if getattr(interface, 'connection_type', '') == 'printer' and {'conn', 'cups_lock'} <= namespace.keys():
             return interface, namespace['conn'], namespace['cups_lock']
     return None

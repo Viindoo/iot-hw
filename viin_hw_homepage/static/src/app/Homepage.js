@@ -16,7 +16,7 @@ import { SelfTest } from "./components/SelfTest.js";
 import { ServerPanel } from "./components/ServerPanel.js";
 import { SoftwarePanel } from "./components/SoftwarePanel.js";
 import { LANGUAGES, setLanguage, t } from "./i18n.js";
-import { documentationUrl, SUPPORT_EMAIL } from "./links.js";
+import { documentationUrl, SUPPORT_URL } from "./links.js";
 import { loadLayer, refresh, startPolling, stopPolling, waitForBox } from "./poll.js";
 import { store } from "./store.js";
 
@@ -75,7 +75,7 @@ class Page extends Component {
         </main>
         <footer class="viin-footer">
             <a t-att-href="documentation" target="_blank" rel="noopener" t-esc="t('footer.documentation')"/>
-            <a t-att-href="'mailto:' + support" t-esc="t('footer.support', {email: support})"/>
+            <a t-att-href="support" target="_blank" rel="noopener" t-esc="t('footer.support', {url: support})"/>
         </footer>
 
         <t t-if="store.dialog" t-component="DIALOGS[store.dialog.name]" t-props="store.dialog.props" t-key="store.dialog.name"/>
@@ -122,11 +122,11 @@ class Page extends Component {
     }
 
     get documentation() {
-        return documentationUrl(this.status && this.status.software.series);
+        return documentationUrl(this.status && this.status.software.series, this.store.language);
     }
 
     get support() {
-        return SUPPORT_EMAIL;
+        return SUPPORT_URL;
     }
 
     choose(code) {

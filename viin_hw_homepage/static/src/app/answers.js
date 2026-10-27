@@ -1,11 +1,11 @@
 /* The words for an answer of the box that is not a success: what happened, and what to do next. */
 
-import { SUPPORT_EMAIL } from "./links.js";
+import { SUPPORT_URL } from "./links.js";
 import { has, t } from "./i18n.js";
 
 /* `prefix.reason` first, then the answers every call can get, then a text that sends the installer to support. */
 export function reasonText(prefix, reason, params = {}) {
-    const values = { support: SUPPORT_EMAIL, reason: reason || "", ...params };
+    const values = { support: SUPPORT_URL, reason: reason || "", ...params };
     for (const key of [`${prefix}.${reason}`, `common.${reason}`]) {
         if (has(key)) {
             return t(key, values);
