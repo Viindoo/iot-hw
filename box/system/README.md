@@ -26,8 +26,8 @@ stops no other service.
 | `usr/local/sbin/viin-box-guard` | The roll-back guard |
 | `etc/avahi/services/viindoo-iot.service` | Announces the page of the box on the local network |
 | `etc/systemd/system/viin-box-first-start.service`, `usr/local/sbin/viin-box-first-start` | Give a new box its own master password and host name |
-| `etc/systemd/system/viin-box-wifi.service`, `usr/local/sbin/viin-box-wifi` | Join the Wi-Fi network the box keeps before the access point of the box is decided on |
-| `etc/systemd/system/viin-box-wifi-watch.service` | Bring the box back to the Wi-Fi network it keeps while it runs, from its access point too |
+| `etc/systemd/system/viin-box-wifi.service`, `usr/local/sbin/viin-box-wifi` | Join the Wi-Fi network the box keeps, or wait for the address of a cable, before the access point of the box is decided on |
+| `etc/systemd/system/viin-box-wifi-watch.service` | Bring the box back to the Wi-Fi network it keeps while it runs, from its access point too; stop the access point once the box has an address on another network |
 | `etc/systemd/system/hostapd.service.d/viindoo.conf`, `usr/local/sbin/viin-box-access-point-name` | Name the access point of the box `Viindoo-IoT-` and the hardware address of its Wi-Fi interface |
 
 ## Web server
@@ -109,8 +109,11 @@ saved network" removes the copy; a join asked before it keeps nothing, even when
 At each start `viin-box-wifi` brings that network up before `rc.local` runs core's
 `wireless_ap.sh`, which starts the access point of the box only when the box has no address: the
 access point starts when no network kept can be joined, never because the box looked too early.
-A box that NetworkManager has joined to the network kept already is left on it. The program never
-holds the start of the box back for more than about a minute, and never fails it.
+A box that NetworkManager has joined to the network kept already is left on it. On a box that
+keeps no network, core's script waits for no address at all; there the program waits, up to thirty
+seconds, for the router to give the cable plugged in its address, so that the open access point
+does not start beside the cable. A box without a cable is not held back. The program never holds
+the start of the box back for more than about a minute, and never fails it.
 
 `viin-box-wifi watch` (the unit `viin-box-wifi-watch.service`) then brings the box back to the
 network it keeps, by itself:
@@ -119,7 +122,9 @@ network it keeps, by itself:
   joins it again after one minute, then more and more seldom, at least every five minutes.
   NetworkManager alone would stop trying a network whose handshake failed, until someone asks.
 - After ten minutes without any address, the access point starts, so that a person can set the
-  box up: a router that restarts is back long before.
+  box up: a router that restarts is back long before. This holds on a box that keeps no network
+  too, which a cable pulled out leaves without an address; an address, a cable's, starts the ten
+  minutes anew.
 - On its access point - after a power cut that brought the router up after the box, or a join
   that failed - the box listens for the network kept every minute, asking for it by its name, so
   that a hidden network answers too. When it hears it, or when its radio cannot listen while it
@@ -129,8 +134,10 @@ network it keeps, by itself:
   the access point, even of a network in reach: a network not heard for fifteen minutes is tried
   anyway, at most every fifteen minutes.
 - A box that gets an address on another network while its access point serves - a cable plugged
-  in - stops the access point once nobody sets the box up through it, as core's script decides at
-  each start: a box with an address has no access point.
+  in, or a router slower than the start of the box - stops the access point once nobody sets the
+  box up through it, as core's script decides at each start: a box with an address has no access
+  point. This holds on a box that keeps no network too; such a box neither listens for nor joins a
+  network from its access point.
 - It never takes the radio from a person setting the box up through the access point: it neither
   listens nor joins while such a person may be there, and asks again once it has listened, just
   before it leaves. A device connected to the access point counts as such a person for ten minutes

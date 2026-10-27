@@ -10,26 +10,31 @@ wireless_ap.sh: that script starts the access point of the box when the box has
 no address. This program brings the network kept up first, unless the box is
 on it already, so that the box has its address before wireless_ap.sh looks.
 When it cannot, on a box left without an address, NetworkManager is kept from
-joining it by itself, which would take the radio from the access point.
+joining it by itself, which would take the radio from the access point. On a
+box that keeps no network, wireless_ap.sh waits for no address: a box with a
+cable plugged in waits here, CABLE_WAIT seconds at most, for the router to give
+the cable its address, so that the access point does not start beside it.
 
 `viin-box-wifi watch` then runs as long as the box does. Off the network kept
 and off its access point, the box joins it again, more and more seldom
 (REJOIN_PERIODS): NetworkManager stops trying a network whose handshake failed
-until someone asks. After ACCESS_POINT_AFTER without any address, the access
-point starts, so that a person can set the box up; a router that restarts is
-back long before. On its access point, the box leaves it to join the network
+until someone asks. After ACCESS_POINT_AFTER without any address, whether the
+box keeps a network or not, the access point starts, so that a person can set
+the box up; a router that restarts is back long before. On its access point, the box leaves it to join the network
 kept once its radio hears that network - a hidden one is asked for by name -
 only while nobody sets the box up through the access point, more and more
 seldom (ACCESS_POINT_PERIODS); the access point starts again when the join
 fails. A radio may hear nothing while it serves the access point: a network not
 heard is tried anyway once the longest of those periods has passed. The access
-point stops once the box has an address on another network, a cable's. A device
-connected to the access point counts as a person setting the box up for
-PAGE_USE_WINDOW after it connected, and after each use of the box page from its
-address, which the box service notes (PAGE_USE) whether the page came through
-the web server of the box or straight to the box service: a phone or tablet
-that joined the open access point by itself, and only stays on it, holds the
-box off its network no longer.
+point stops once the box has an address on another network, a cable's, whether
+the box keeps a network or not: core's script starts it on a box without any
+address as the box starts, before a router may have given the cable its
+address. A device connected to the access point counts as a person setting the
+box up for PAGE_USE_WINDOW after it connected, and after each use of the box
+page from its address, which the box service notes (PAGE_USE) whether the page
+came through the web server of the box or straight to the box service: a phone
+or tablet that joined the open access point by itself, and only stays on it,
+holds the box off its network no longer.
 
 Both leave the Wi-Fi alone while a join asked from the box page holds LOCK,
 and hold it until what they started - the access point, a restart of the box
@@ -55,6 +60,10 @@ KEPT_FILES = (
     Path('/root_bypass_ramdisks/etc/netplan/90-NM-viindoo-wifi.yaml'),
 )
 INTERFACE = 'wlan0'
+# The network interfaces of the system; a wired one is named eth* or en*, and says in `carrier` whether a cable
+# links it to another device.
+INTERFACES = Path('/sys/class/net')
+WIRED_PREFIXES = ('eth', 'en')
 # Held while this program, or a join asked from the box page, changes the Wi-Fi of the box.
 LOCK = Path('/run/viin-box-wifi.lock')
 # Core's script: given `force`, it starts the access point of the box unless the box has an address, and restarts the
@@ -78,6 +87,8 @@ PAGE_USE = Path('/run/odoo/viin-page-use.json')
 PAGE_USE_WINDOW = 600
 # Seconds. How long the Wi-Fi interface may take to be ready, NetworkManager to join a network, the radio to scan.
 READY_WAIT = 15
+# Seconds. How long a box that keeps no network waits, as it starts, for the address of the cable plugged in.
+CABLE_WAIT = 30
 JOIN_WAIT = 45
 SCAN_WAIT = 30
 # Seconds. How often the watch looks; how long it waits before each join again of a network lost, the last one
@@ -193,8 +204,32 @@ def locked():
             os.close(descriptor)
 
 
+def cable_plugged():
+    """Whether a cable links a wired interface of the box to another device."""
+    try:
+        interfaces = list(INTERFACES.iterdir())
+    except OSError:
+        return False
+    for interface in interfaces:
+        if interface.name.startswith(WIRED_PREFIXES):
+            try:
+                if (interface / 'carrier').read_text(encoding='ascii').strip() == '1':
+                    return True
+            except (OSError, ValueError):
+                # An interface that is down tells no carrier.
+                continue
+    return False
+
+
+def wait_for_cable_address():
+    deadline = time.monotonic() + CABLE_WAIT
+    while not addresses() and cable_plugged() and time.monotonic() < deadline:
+        time.sleep(1)
+
+
 def main():
     if not kept():
+        wait_for_cable_address()
         return 0
     with locked() as held:
         if not held:
@@ -224,6 +259,9 @@ class Watch:
 
     def __init__(self):
         self.lost_since = None
+        # When the box was first seen without any address, until it has one: a cable's address keeps the count off
+        # while lost_since, which paces the joins again, runs.
+        self.bare_since = None
         self.rejoins = 0
         self.next_rejoin = None
         self.on_access_point_since = None
@@ -268,17 +306,18 @@ def watch():
 
 
 def look(watched, now):
-    """Do what the box needs at the time `now` to stay on the network it keeps, or to come back to it."""
-    if not any(path.exists() for path in KEPT_FILES) or not kept():
-        watched.reset()
-        return
+    """Do what the box needs at the time `now` to stay on the network it keeps, or to come back to it, and to leave
+    its access point once it has another network."""
+    keeps = any(path.exists() for path in KEPT_FILES) and kept()
     with locked() as held:
         if not held:
             return
         if on_access_point():
-            look_from_access_point(watched, now)
-        else:
+            look_from_access_point(watched, now, keeps)
+        elif keeps:
             look_from_network(watched, now)
+        else:
+            look_without_network(watched, now)
 
 
 def look_from_network(watched, now):
@@ -305,22 +344,44 @@ def look_from_network(watched, now):
             return
         watched.rejoins += 1
         watched.next_rejoin = now + period(REJOIN_PERIODS, watched.rejoins)
-    if now - watched.lost_since >= ACCESS_POINT_AFTER and not addresses():
-        joins_by_itself('no')
-        say('the box has had no address for a while: its access point starts, so that a person can set it up')
-        wait_for(ACCESS_POINT_SCRIPT, 'force')
+    if addresses():
+        watched.bare_since = None
+    elif watched.bare_since is None:
+        watched.bare_since = now
+    if watched.bare_since is not None and now - watched.bare_since >= ACCESS_POINT_AFTER:
+        offer_setup_network(watched)
+
+
+def look_without_network(watched, now):
+    """A box that keeps no network and is off its access point has the access point after ACCESS_POINT_AFTER without
+    any address, as a box that keeps one does; an address, a cable's, starts the count anew."""
+    if addresses():
         watched.reset()
+        return
+    if watched.bare_since is None:
+        watched.bare_since = now
+    if now - watched.bare_since >= ACCESS_POINT_AFTER:
+        offer_setup_network(watched)
 
 
-def look_from_access_point(watched, now):
+def offer_setup_network(watched):
+    joins_by_itself('no')
+    say('the box has had no address for a while: its access point starts, so that a person can set it up')
+    wait_for(ACCESS_POINT_SCRIPT, 'force')
+    watched.reset()
+
+
+def look_from_access_point(watched, now, keeps):
+    """`keeps`: whether the box keeps a network, which it then listens for and joins from its access point."""
     watched.lost_since = None
     connected = observed_stations(watched, now)
     if watched.on_access_point_since is None:
         watched.on_access_point_since = now
         watched.next_try = now + period(ACCESS_POINT_PERIODS, watched.tries)
-        joins_by_itself('no')
-        if not watched.tries:
-            say('the box is on its access point: it listens for the Wi-Fi network it keeps')
+        if keeps:
+            joins_by_itself('no')
+            if not watched.tries:
+                say('the box is on its access point: it listens for the Wi-Fi network it keeps')
         return
     # As core's script decides as the box starts: a box with an address on another network has no access point.
     if set(addresses()) - {ACCESS_POINT.split('/')[0]}:
@@ -328,8 +389,11 @@ def look_from_access_point(watched, now):
             say('the box has an address on another network: its access point stops')
             leave_access_point()
             run('service', 'dnsmasq', 'stop')
-            joins_by_itself('yes')
+            if keeps:
+                joins_by_itself('yes')
             watched.reset()
+        return
+    if not keeps:
         return
     # Nobody setting the box up is ever cut off: scanning takes the radio from them, joining takes it away.
     if now < watched.next_try or someone_sets_the_box_up(watched, now, connected):

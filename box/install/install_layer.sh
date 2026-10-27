@@ -13,7 +13,7 @@
 #   --channel REF         the full ref a CANDIDATE box follows; the release must be a candidate then,
 #                         and without this option it must not be one
 #   --home DIR            home of the box user                     (default: /home/pi)
-#   --skip-apt            install no Debian package (avahi-daemon is expected to be there)
+#   --skip-apt            install no Debian package (avahi-daemon and avahi-utils are expected to be there)
 #   --skip-system         do not run the system file installer of the layer
 set -o errexit
 set -o nounset
@@ -132,9 +132,14 @@ configure_box_service() {
 
 install_packages() {
     [ -z "${skip_apt}" ] || return 0
-    if ! dpkg --status avahi-daemon > /dev/null 2>&1; then
+    local missing=() package
+    # avahi-utils holds avahi-browse, which names the address of a printer the network announces by name.
+    for package in avahi-daemon avahi-utils; do
+        dpkg --status "${package}" > /dev/null 2>&1 || missing+=("${package}")
+    done
+    if [ "${#missing[@]}" -gt 0 ]; then
         DEBIAN_FRONTEND=noninteractive apt-get update --quiet=2
-        DEBIAN_FRONTEND=noninteractive apt-get install --yes --quiet=2 avahi-daemon
+        DEBIAN_FRONTEND=noninteractive apt-get install --yes --quiet=2 "${missing[@]}"
     fi
 }
 
