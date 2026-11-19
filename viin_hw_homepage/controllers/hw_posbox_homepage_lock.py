@@ -147,7 +147,10 @@ def _manages_databases(address):
 
 
 def _core_controllers():
-    """(the controller classes of core that ROUTES may be about, why one of their packages could not be imported)."""
+    """The controller classes of core that ROUTES may be about.
+
+    :return: (the classes, why one of their packages could not be imported)
+    """
     problems = []
     for package in (*BOX_CONTROLLERS, WEB_CONTROLLERS):
         try:
@@ -164,7 +167,10 @@ def _core_controllers():
 
 
 def _addresses(controller, name):
-    """Where Odoo serves the method `name` of `controller`: the addresses of the nearest class that gives any."""
+    """Where Odoo serves the method `name` of `controller`.
+
+    :return: the addresses of the nearest class that gives any, or ()
+    """
     for owner in controller.__mro__:
         routing = getattr(vars(owner).get(name), 'original_routing', None) or {}
         if routing.get('routes'):
@@ -173,7 +179,10 @@ def _addresses(controller, name):
 
 
 def _endpoints(controller):
-    """[(method, addresses)] for each route ROUTES is about that `controller` itself defines, or defines again."""
+    """The routes ROUTES is about that `controller` itself defines, or defines again.
+
+    :return: [(method name, addresses)]
+    """
     whole = _defined_in(controller, *BOX_CONTROLLERS)
     found = []
     for name, member in vars(controller).items():
@@ -184,7 +193,10 @@ def _endpoints(controller):
 
 
 def _fate(addresses):
-    """The fate of a method served at `addresses`: of the fates of its addresses, the one that gives least."""
+    """The fate of a method served at `addresses`.
+
+    :return: of the fates of its addresses, the one that gives least
+    """
     fates = {ROUTES[address].fate if address in ROUTES else CLOSED for address in addresses}
     return min(fates, key=FATES.index)
 
@@ -231,7 +243,10 @@ class _NotServed:
 
 
 def _lock(controller):
-    """The controller that inherits from `controller` to give its routes their fate; None when core serves them all."""
+    """The controller that inherits from `controller` to give its routes their fate.
+
+    :return: the controller, or None when core serves all the routes as they are
+    """
 
     def original(self, name):
         return getattr(super(owner, self), name)
@@ -269,7 +284,10 @@ def _lock(controller):
 
 
 def _runner(addresses):
-    """How the layer serves the route of core at `addresses`: a function of core's method and its arguments."""
+    """How the layer serves the route of core at `addresses`.
+
+    :return: a function of core's method and its arguments
+    """
     if DISCONNECT in addresses:
         return _leave_server
     if CONNECT in addresses:
@@ -298,7 +316,10 @@ def _one_at_a_time(endpoint):
 
 
 def _asked(data):
-    """What a device is asked for in `data`, which core takes as a JSON text: a dict, empty when `data` holds none."""
+    """What a device is asked for in `data`, which core takes as a JSON text.
+
+    :return: the request as a dict, empty when `data` holds none
+    """
     if isinstance(data, (str, bytes, bytearray)):
         try:
             data = json.loads(data)
@@ -381,21 +402,15 @@ def _join_wifi(_core_join, essid, password=None, persistent=False):
     """Start to join a Wi-Fi network as `wifi.join` does, and answer how to open the box itself.
 
     Core's route also answers an address: its server's, or else the one the
-    box has on its current network. A box without a server that has no route
-    out - one reached on its own access point, without a cable - has no such
-    address, and core's route fails there after the join has started. Neither
-    address leads to the box once it has joined anyway: the box does not know
-    its new address when it answers - the join runs in the background - but
-    its host name is its own for life, and a browser on the network finds it
-    by the name `<host name>.local`.
+    box has on its current network. Neither leads to the box once it has
+    joined: the box does not know its new address when it answers, the join
+    runs in the background. Its host name is its own for life, and a browser
+    on the network finds it by the name `<host name>.local`.
 
-    A network without a password is joined without one, as is an empty or
-    missing `password`; a password given is passed as it is. The answer holds
-    core's `status` and `message`, and `box`: `host_name`, `local_name` and
-    `url`, the address by which a browser opens the box. A name or a password
-    `wifi.refusal` refuses is answered `refused` with its reason. A join asked
-    while the box changes its Wi-Fi by itself is answered `failed`, reason
-    `busy`, and is not started: it may be asked again a moment later.
+    :param password: empty or missing for a network without one; passed as it is otherwise
+    :return: core's `status` and `message`, and `box` (`host_name`, `local_name` and `url`, the address by
+        which a browser opens the box); `refused` with its reason for a name or a password `wifi.refusal`
+        refuses; `failed` with reason `busy`, not started, while the box changes its Wi-Fi by itself
     """
     password = '' if password is None else password
     reason = wifi.refusal(essid, password)
@@ -442,7 +457,10 @@ def _change_server(connect, *args, **kwargs):
 
 
 def _parameter_changes(expected, found):
-    """How the parameter names `found` differ from `expected`: the ones added, the ones removed, another order."""
+    """How the parameter names `found` differ from `expected`.
+
+    :return: one phrase per difference: names added, names removed, another order
+    """
     changes = []
     added = [parameter for parameter in found if parameter not in expected]
     removed = [parameter for parameter in expected if parameter not in found]
@@ -457,7 +475,7 @@ def _parameter_changes(expected, found):
 
 
 def _wifi_differences(name, method):
-    """What `_join_wifi` relies on that core's JOIN_WIFI, served by `method`, no longer gives."""
+    """What `_join_wifi` relies on that core's JOIN_WIFI, served by `method`, does not give."""
     found = []
     parameters = tuple(inspect.signature(method).parameters)
     if parameters != WIFI_PARAMETERS:
@@ -469,7 +487,10 @@ def _wifi_differences(name, method):
 
 
 def _differences():
-    """What core registers that ROUTES does not expect, and what ROUTES expects that core does not give."""
+    """What core registers that ROUTES does not expect, and what ROUTES expects that core does not give.
+
+    :return: one line per difference
+    """
     controllers, differences = _core_controllers()
     served = {}
     for controller in controllers:
@@ -490,7 +511,7 @@ def _differences():
             expected, fate = ROUTES[address][:2]
             differences.append(f'{address} is served by {name}, not by {expected}: it stays {fate}')
     differences += [
-        f'{address} ({route.method}, {route.fate}) is no longer a route of core'
+        f'{address} ({route.method}, {route.fate}) is not a route of core'
         for address, route in sorted(ROUTES.items()) if address not in served
     ]
     return differences

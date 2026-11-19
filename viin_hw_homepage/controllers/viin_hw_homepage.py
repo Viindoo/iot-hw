@@ -67,7 +67,10 @@ def _ip(text):
 
 
 def _host(text):
-    """`text` as the host of a printer address, None when it is none: no name or address of the box itself."""
+    """`text` as the host of a printer address; the box itself is never one.
+
+    :return: the host, or None when `text` is none
+    """
     found = _ip(text)
     if found is None:
         if text.replace('.', '').isdigit():
@@ -82,11 +85,11 @@ def _host(text):
 
 
 def device_uri(address):
-    """The print-server address of a printer that takes raw jobs at `address`, None when `address` is not one.
+    """The print-server address of a printer that takes raw jobs at `address`.
 
-    `address` is a host name, an IPv4 address or an IPv6 address, with or
-    without a port (an IPv6 address with a port in brackets); the port is
-    DEFAULT_PORT when none is given.
+    :param address: a host name, an IPv4 address or an IPv6 address, with or without a port (an IPv6
+        address with a port in brackets); the port is DEFAULT_PORT when none is given
+    :return: the print-server address, or None when `address` is not a printer address
     """
     if not isinstance(address, str) or len(address) > MAX_ADDRESS:
         return None
@@ -116,7 +119,10 @@ def kind_by_name(queue):
 
 
 def _base_name(name, uri):
-    """The start of the queue name: the name the installer gave, else one made of the address; '' when unusable."""
+    """The start of the queue name: the name the installer gave, else one made of the address.
+
+    :return: the start of the name, or '' when the name given is unusable
+    """
     if name is None or name == '':
         host = uri.removeprefix('socket://').rsplit(':', 1)[0]
         return f'{DEFAULT_NAME}_{_NOT_IN_NAME.sub("_", host)}'.strip('_')[:MAX_NAME]
@@ -126,7 +132,11 @@ def _base_name(name, uri):
 
 
 def _queue_name(base, mark, taken):
-    """A queue name not in `taken` (lower case) that starts with `base` and ends with `mark`; '' when none is left."""
+    """A queue name that starts with `base` and ends with `mark`.
+
+    :param taken: the queue names in use, in lower case
+    :return: a name not in `taken`, or '' when none is left
+    """
     for copy in range(1, MAX_COPIES + 1):
         start = base if copy == 1 else f'{base}_{copy}'
         name = f'{start}_{mark}' if mark else start
@@ -136,7 +146,10 @@ def _queue_name(base, mark, taken):
 
 
 def _printer_interface():
-    """(core's printer interface, its print-server connection, the lock that serialises it), or None."""
+    """Core's printer interface.
+
+    :return: (the interface, its print-server connection, the lock that serialises it), or None
+    """
     for interface in seams.core('main').interfaces.values():
         # The layer wraps `get_devices`: the connection is a name of the file of core that defines it.
         namespace = getattr(inspect.unwrap(getattr(interface, 'get_devices', None)), '__globals__', {})
@@ -148,12 +161,12 @@ def _printer_interface():
 def add_network_printer(address, kind, name=None):
     """Give the printer that takes raw jobs at `address` a print queue core takes for a printer of `kind`.
 
-    {'status': 'added', 'queue', 'identifier', 'kind', 'appears_within'}:
-    `identifier` is the one core gives the device, `appears_within` the
-    seconds within which core finds it. {'status': 'refused', 'reason':
-    invalid_address, invalid_kind, invalid_name or already_added (+ `queue`,
-    the queue the box already has for that address)}; {'status': 'failed',
-    'reason': print_server_unavailable or print_server_error}.
+    :param name: the start of the queue name; one is made of the address when none is given
+    :return: {'status': 'added', 'queue', 'identifier', 'kind', 'appears_within'}, where `identifier` is the one
+        core gives the device and `appears_within` the seconds within which core finds it;
+        {'status': 'refused', 'reason': invalid_address, invalid_kind, invalid_name or already_added, with
+        `queue` the queue the box already has for that address}; or {'status': 'failed', 'reason':
+        print_server_unavailable or print_server_error}
     """
     if not isinstance(kind, str) or kind not in KINDS:
         return _refused('invalid_kind')

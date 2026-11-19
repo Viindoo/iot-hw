@@ -23,6 +23,8 @@ def _contained(answer):
     Left to the framework, the error would be logged and sent back with its
     message, which may quote what the caller sent. Only its kind and the line
     that raised it are logged.
+
+    :param answer: what the route answers in that case
     """
     def decorator(endpoint):
         @functools.wraps(endpoint)
@@ -64,9 +66,8 @@ class BoxSecurity(http.Controller):
     def unlock(self, code=None):
         """Exchange the settings code for the unlock proof, which travels in a header of the answer and nowhere else.
 
-        {'status': 'unlocked', 'valid_for': seconds}, {'status': 'refused',
-        'reason': 'invalid_code'}, or {'status': 'not_locked'} on a box that
-        has no server, where nothing asks for a proof.
+        :return: {'status': 'unlocked', 'valid_for': seconds}, {'status': 'refused', 'reason': 'invalid_code'},
+            or {'status': 'not_locked'} on a box that has no server, where nothing asks for a proof
         """
         if not lock.is_locked():
             return {'status': 'not_locked'}
@@ -84,8 +85,9 @@ class BoxSecurity(http.Controller):
     def certificate(self, certificate=None, key=None, host_name=None, restore=False):
         """Install the certificate of the customer, or with `restore` go back to one the box makes itself.
 
-        The answer is the one of `trust.install_certificate`, or {'status':
-        'restored'} with what `trust.box_certificate` says of the new one.
+        :param restore: True to go back to the certificate the box makes itself
+        :return: the answer of `trust.install_certificate`, or {'status': 'restored'} with what
+            `trust.box_certificate` says of the new certificate
         """
         if restore is True:
             trust.restore_box_certificate()
