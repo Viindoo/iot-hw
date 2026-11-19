@@ -33,7 +33,7 @@ INSTALLER = box.SYSTEM_FILES / 'apply.sh'
 # Core's script that rc.local runs as the box starts: it starts the access point of the box when the box has no
 # address.
 ACCESS_POINT_SCRIPT = 'point_of_sale/tools/posbox/configuration/wireless_ap.sh'
-SITE_ADDRESS = '192.168.1.50'
+SITE_ADDRESS = '192.0.2.50'
 # Every sign of ASCII, then letters up to the longest password WPA takes: 63 characters.
 EVERY_SIGN = (string.punctuation + string.ascii_letters)[:63]
 
@@ -67,7 +67,7 @@ LEGITIMATE = {
 
 
 def as_typed(password):
-    """The password of a network as NetworkManager is to hold it: none for an open network."""
+    """Give the password as NetworkManager holds it: ``None`` for an open network."""
     return password or None
 
 
@@ -83,17 +83,26 @@ class WifiCase(common.BoxCase):
         self.card, self.netplan_card = wifi_common.card_copies()
 
     def join(self, name, password, proof=None, **parameters):
-        """The answer of the route, once the join it started has ended."""
+        """Ask the route to join a network and wait until that join has ended.
+
+        :return: the answer of the route
+        """
         with wifi_common.settled():
             return self.call(WIFI, proof=proof, essid=name, password=password, **parameters)
 
     def kept(self):
-        """(name, password) of the network the box joins again as it starts: the one of its copy on the card."""
+        """Read the network the box joins again as it starts, from its copy on the card.
+
+        :return: ``(name, password)``, or ``None`` when no copy is kept
+        """
         copy = wifi_common.on_the_card(self.card)
         return copy and (copy['ssid'], copy.get('psk'))
 
     def keep_earlier(self, name, password):
-        """Arrange a network the box joined and kept before: NetworkManager holds it and its copy is on the card."""
+        """Arrange a network the box joined and kept before: NetworkManager holds it and its copy is on the card.
+
+        :return: the profile NetworkManager holds
+        """
         profile = self.network.hold_profile(PROFILE, name, password)
         wifi_common.put_on_the_card(self.card, profile)
         return profile
@@ -210,8 +219,8 @@ class TestJoinThatFails(WifiCase):
         self.assertEqual(self.network.world()['active_ssid'], 'Office')
         self.assertEqual(self.network.access_point_starts(), [])
 
-    def test_join_that_fails_on_a_box_that_keeps_no_network_starts_the_access_point(self):
-        self.network.change(networks={'Workshop': PASSWORD})
+    def test_join_that_fails_on_a_box_that_keeps_no_network_and_is_left_with_no_address_starts_the_access_point(self):
+        self.network.change(networks={'Workshop': PASSWORD}, addresses='')
 
         self.join('Workshop', 'typed-wrong', persistent=True)
 
@@ -236,7 +245,6 @@ class TestJoinThatFails(WifiCase):
         self.join('Workshop', 'typed-wrong', persistent=True)
 
         self.assertTrue(self.network.held()[PROFILE]['autoconnect'])
-        self.assertEqual(self.network.access_point_starts(), [['force']])
 
     def test_join_that_fails_starts_the_access_point_when_the_network_kept_is_out_of_reach_too(self):
         self.keep_earlier('Office', 'office-password')
@@ -246,6 +254,64 @@ class TestJoinThatFails(WifiCase):
 
         self.assertEqual(self.network.access_point_starts(), [['force']])
         self.assertEqual(self.kept(), ('Office', 'office-password'))
+
+
+class TestJoinThatLeavesTheAddressesAsTheyWere(WifiCase):
+    """A join that fails and changes no address of the box restarts nothing: the box page and the tills stay
+    connected."""
+
+    FAILURES = {'password refused': ('Workshop', 'typed-wrong'), 'network not reached': ('Elsewhere', PASSWORD)}
+
+    def assertNothingStartedOrRestarted(self):
+        self.assertEqual(self.network.access_point_starts(), [])
+        self.assertEqual(self.network.restarts(), [])
+        self.assertEqual(common.restarts, [])
+
+    def test_failed_join_on_a_box_that_holds_a_cable_address_and_keeps_no_network_runs_no_script_and_restarts_nothing(
+            self):
+        for case, (name, password) in self.FAILURES.items():
+            with self.subTest(case):
+                self.network.change(networks={'Workshop': PASSWORD}, addresses=f'{SITE_ADDRESS} ')
+
+                self.join(name, password, persistent=True)
+
+                self.assertNothingStartedOrRestarted()
+                self.assertEqual(self.network.held(), {}, 'the profile of the join is gone')
+
+    def test_failed_join_that_brings_back_the_network_the_box_was_on_restarts_nothing(self):
+        self.keep_earlier('Office', 'office-password')
+        self.network.change(
+            networks={'Office': 'office-password', 'Workshop': PASSWORD}, active=PROFILE, active_ssid='Office')
+
+        self.join('Workshop', 'typed-wrong', persistent=True)
+
+        self.assertEqual(self.network.world()['active_ssid'], 'Office')
+        self.assertNothingStartedOrRestarted()
+
+    def test_failed_join_that_leaves_other_addresses_than_before_restarts_the_box_service(self):
+        self.keep_earlier('Office', 'office-password')
+        self.network.change(networks={'Office': 'office-password', 'Workshop': PASSWORD}, addresses=f'{SITE_ADDRESS} ')
+
+        self.join('Workshop', 'typed-wrong', persistent=True)
+
+        self.assertEqual(self.network.world()['active_ssid'], 'Office')
+        self.assertEqual(len(common.restarts), 1)
+        self.assertEqual(self.network.access_point_starts(), [])
+
+    def test_failed_join_that_leaves_the_box_with_no_address_starts_the_access_point_and_restarts_nothing_itself(self):
+        self.network.change(networks={'Workshop': PASSWORD}, addresses='')
+
+        self.join('Workshop', 'typed-wrong', persistent=True)
+
+        self.assertEqual(self.network.access_point_starts(), [['force']])
+        self.assertEqual(common.restarts, [])
+
+    def test_join_that_succeeds_restarts_the_box_service_whatever_the_box_held_before(self):
+        self.network.change(networks={'Workshop': PASSWORD}, addresses=f'{SITE_ADDRESS} ')
+
+        self.join('Workshop', PASSWORD, persistent=True)
+
+        self.assertEqual(len(common.restarts), 1)
 
 
 class TestWhyAJoinFailed(WifiCase):
@@ -262,6 +328,47 @@ class TestWhyAJoinFailed(WifiCase):
 
         self.assertEqual(self.wifi.last_join()['result'], 'password_refused')
         self.assertEqual(self.wifi.last_join()['ssid'], 'Workshop')
+
+    def test_password_refused_that_only_the_supplicant_names_is_reported_as_password_refused(self):
+        self.network.change(networks={'Workshop': PASSWORD}, nmcli_timeout=True)
+
+        self.join('Workshop', 'typed-wrong', persistent=True)
+
+        self.assertEqual(self.wifi.last_join()['result'], 'password_refused')
+
+    def test_network_that_does_not_answer_while_nmcli_times_out_is_reported_as_not_reached(self):
+        self.network.change(networks={}, nmcli_timeout=True)
+
+        self.join('Workshop', PASSWORD, persistent=True)
+
+        self.assertEqual(self.wifi.last_join()['result'], 'not_reached')
+
+    def test_key_refused_before_the_join_began_is_not_counted_against_it(self):
+        self.network.change(
+            networks={}, nmcli_timeout=True,
+            journal=[{'at': time.time() - 3600, 'text': wifi_common.REFUSED_KEY_LINE}])
+
+        self.join('Workshop', PASSWORD, persistent=True)
+
+        self.assertEqual(self.wifi.last_join()['result'], 'not_reached')
+
+    def test_right_key_is_reported_as_joined_even_when_the_supplicant_logged_a_refused_key_meanwhile(self):
+        self.network.change(networks={'Workshop': PASSWORD}, logged_while_joining=wifi_common.REFUSED_KEY_LINE)
+
+        self.join('Workshop', PASSWORD, persistent=True)
+
+        self.assertEqual(self.wifi.last_join()['result'], 'joined')
+
+    def test_nothing_derived_from_the_password_reaches_the_log_when_the_supplicant_names_the_refusal(self):
+        self.network.change(networks={'Workshop': PASSWORD}, nmcli_timeout=True)
+        refused = 'Suite-wifi&8K2\\x"y\'z'
+        with common.box_log(logging.DEBUG) as written:
+            self.join('Workshop', refused, persistent=True)
+            log = written()
+
+        self.assertTrue(log)
+        self.assertEqual([spelling for spelling in {refused, repr(refused)[1:-1], json.dumps(refused)[1:-1]}
+                          if spelling in log], [])
 
     def test_network_nobody_hears_is_reported_as_not_reached(self):
         self.network.change(networks={})
@@ -820,7 +927,7 @@ class TestStartOfTheBox(unittest.TestCase):
         return done
 
     def changes(self):
-        """What the start asked of NetworkManager and of the radio, beside what it only read."""
+        """List what the start asked of NetworkManager and of the radio, beside what it only read."""
         return [call for call in self.network.calls() if 'show' not in call and call != ['hostname', '-I']]
 
     def test_box_that_keeps_no_network_does_nothing_with_the_wifi(self):
@@ -950,7 +1057,10 @@ class TestWatchRunsTheProgramInstalled(common.BoxStateCase):
         self.path = f'{programs}:{os.environ["PATH"]}'
 
     def install(self):
-        """What the installer asked of systemd: (arguments, digest of the watch program installed then) each."""
+        """Run the installer.
+
+        :return: what it asked of systemd, as ``(arguments, digest of the watch program installed at that moment)``
+        """
         common.as_root('rm', '-f', str(self.asked))
         done = subprocess.run(['sudo', '-n', 'env', f'PATH={self.path}', 'bash', str(INSTALLER)], capture_output=True,
                               text=True, check=False, timeout=common.PROCESS_TIMEOUT)
@@ -995,7 +1105,7 @@ class TestCoreAccessPointScriptMoved(common.BoxStateCase):
         'service hostapd restart': '/usr/sbin/hostapd -B /etc/hostapd/hostapd.conf',
     }
 
-    def test_standalone_check_names_each_line_of_the_access_point_script_that_core_no_longer_holds(self):
+    def test_standalone_check_names_each_line_of_the_access_point_script_that_core_changed(self):
         for former, later in self.CHANGED_LINES.items():
             with self.subTest(line=former):
                 check = common.seam_check(script_changes={ACCESS_POINT_SCRIPT: {former: later}})
@@ -1006,7 +1116,7 @@ class TestCoreAccessPointScriptMoved(common.BoxStateCase):
                     [line for line in self.CHANGED_LINES if line in check.output], [former], check.output)
 
 
-class TestCoreAccessPointScriptNoLongerTellsAnAddress(common.MovedSeamCase):
+class TestCoreAccessPointScriptThatReadsTheAddressOtherwise(common.MovedSeamCase):
     number = 13
     script_changes = {ACCESS_POINT_SCRIPT: {'WIRED_IP=$(hostname -I)': 'WIRED_IP=$(ip -4 -o address show dev eth0)'}}
     other_seams = (1, 2, 3, 10, 12)

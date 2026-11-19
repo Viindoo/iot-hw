@@ -38,15 +38,15 @@ class ConfirmedReadings(FunctionSeam):
         missing = sorted(self.uses - set(original.__code__.co_names))
         missing += sorted(self.keys - _constants(original.__code__))
         if missing:
-            raise SeamError('no longer builds and hands out its event as the layer expects: %s' % ', '.join(missing))
+            raise SeamError('does not build and hand out its event as the layer expects: %s' % ', '.join(missing))
         if 'request' not in original.__globals__:
-            raise SeamError(f'{self.module} no longer holds the request under way')
+            raise SeamError(f'{self.module} does not hold the request under way')
         try:
             action = core(ACTION_ROUTE).DriverController.action
         except (KeyError, AttributeError):
             raise SeamError(f'{CORE}.{ACTION_ROUTE}.DriverController.action does not exist') from None
         if 'data' not in inspect.signature(action).parameters:
-            raise SeamError('the action route no longer takes the data of the action as `data`')
+            raise SeamError('the action route does not take the data of the action as `data`')
 
     def apply(self):
         super().apply()

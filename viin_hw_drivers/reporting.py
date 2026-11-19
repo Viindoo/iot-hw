@@ -41,7 +41,10 @@ MAX_ERROR = 200
 
 
 def _age(stamp):
-    """Whole seconds on the monotonic clock since `stamp`; None when there is no stamp."""
+    """Whole seconds on the monotonic clock since `stamp`.
+
+    :return: the seconds; ``None`` when there is no stamp
+    """
     return None if stamp is None else max(0, int(time.monotonic() - stamp))
 
 
@@ -80,7 +83,10 @@ class _Ledger:
         self._waiting = 0
 
     def begin(self):
-        """(number of a report that starts, how many reports the layer had asked for by then)."""
+        """Start counting a report.
+
+        :return: ``(number, asked)``: the number of the report, and how many reports the layer had asked for by then
+        """
         with self._lock:
             self._begun += 1
             return self._begun, self._asked
@@ -166,21 +172,23 @@ _channel = _Channel()
 def outcome():
     """What became of the reports of the box to its server since the box started.
 
-    {'state': never, accepted, refused or unreachable - how the latest report ended;
-    'at': when it ended; 'accepted_at': when the server last took a report;
-    'owed': whether a report is still to be sent; 'at_age' and 'accepted_age': how many whole seconds ago those
-    two moments were, on the monotonic clock, so they stay right when the clock of the box is corrected later}.
-    Times are seconds since 1970 on the clock of the box, None for never; an age is None for never too.
+    A time is in seconds since 1970 on the clock of the box; a time and an age are ``None`` for never.
+
+    :return: ``state`` (``never``, ``accepted``, ``refused`` or ``unreachable``: how the latest report ended),
+        ``at`` (when it ended), ``accepted_at`` (when the server last took a report), ``owed`` (whether a report is
+        still to be sent), ``at_age`` and ``accepted_age`` (whole seconds since those two moments, on the monotonic
+        clock, so a later correction of the clock of the box does not move them)
+    :rtype: dict
     """
     return _ledger.outcome()
 
 
 def request_report():
-    """Ask for a report of the box and its devices to the server, whatever changed or not.
+    """Ask for a report of the box and its devices to the server, whether anything changed or not.
 
     For a part of the layer that changed what the server shows of the box: the
-    kind of a device, a name, a certificate. Returns at once; the device loop of
-    core sends the report at its next pass, and again until the server took it.
+    kind of a device, a name, a certificate. Returns at once; the report is sent
+    by the device loop of core, and again until the server took it.
     """
     _ledger.ask()
 
@@ -191,11 +199,13 @@ def is_due():
 
 
 def report():
-    """Report the box and all its devices to the server now, on the calling thread; returns `outcome()`.
+    """Report the box and all its devices to the server now, on the calling thread.
 
     The report carries what the box has at this moment. It takes REPORT_TIMEOUT
-    seconds at most and never raises: a report the server did not take stays
-    owed, and the device loop sends it again.
+    seconds at most and a failure is logged, never raised: a report the server
+    did not take stays owed, and the device loop sends it again.
+
+    :return: `outcome()`
     """
     try:
         manager = core('main').manager
@@ -241,7 +251,10 @@ class _Report:
                 open_channel()
 
     def send(self):
-        """Send the report; False when the server has not answered in time, and the report goes on alone."""
+        """Send the report.
+
+        :return: ``False`` when the server has not answered in time, and the report goes on alone
+        """
         threading.Thread(target=self._run, name=f'ViinReport-{self._number}', daemon=True).start()
         self._ended.wait(REPORT_TIMEOUT)
         with self._handover:
@@ -260,9 +273,9 @@ class _Report:
 def deliver(send, client, has_server):
     """Run one report of core and keep what became of it.
 
-    `send(client)` is the report of core, `client` the live channel client core
-    hands it, None when it hands none. What `send` raises is raised here, unless
-    it took longer than REPORT_TIMEOUT.
+    :param send: the report of core, called with `client`
+    :param client: the live channel client core hands it, ``None`` when it hands none
+    :raises Exception: what `send` raises, unless it took longer than REPORT_TIMEOUT
     """
     if not has_server:
         return send(client)
@@ -289,7 +302,10 @@ def deliver(send, client, has_server):
 
 
 def _hold(client):
-    """Keep the live channel client core made; True when it is not the one already kept."""
+    """Keep the live channel client core made.
+
+    :return: whether it is not the one already kept
+    """
     with _channel.lock:
         if _channel.client is client:
             return False
@@ -309,12 +325,18 @@ def _hold(client):
 
 
 def client():
-    """The live channel client of core, a thread; None on a box that had no server when it started."""
+    """The live channel client of core, a thread.
+
+    :return: the client; ``None`` on a box that had no server when it started
+    """
     return _channel.client
 
 
 def open_channel():
-    """Start the live channel when the server gave one and it does not run yet; True when it runs."""
+    """Start the live channel when the server gave one and it does not run yet.
+
+    :return: whether the channel runs
+    """
     kept = _channel.client
     if kept is None or not kept.iot_channel:
         return False
@@ -330,10 +352,11 @@ def open_channel():
 def channel():
     """The state of the live channel.
 
-    {'state': off, waiting, connecting, connected or reconnecting; 'since': when
-    it took that state, seconds since 1970 on the clock of the box, None while off; 'since_age': how many whole
-    seconds ago that was, on the monotonic clock, None while off; 'error': what the channel last failed on, ''
-    when connected}.
+    :return: ``state`` (``off``, ``waiting``, ``connecting``, ``connected`` or ``reconnecting``), ``since`` (when it
+        took that state, in seconds since 1970 on the clock of the box), ``since_age`` (whole seconds since then, on
+        the monotonic clock) - both ``None`` while off - and ``error`` (what the channel last failed on, empty when
+        connected)
+    :rtype: dict
     """
     with _channel.lock:
         return {
@@ -343,10 +366,12 @@ def channel():
 
 
 def report_on_connection(connected):
-    """Report the box and all its devices as the live channel client `connected` gets a connection.
+    """Report the box and all its devices as the live channel client gets a connection.
 
     Called before the channel subscribes: the server takes a box that subscribes
     for a box that still has every device it had, so it must know better first.
+
+    :param connected: the live channel client that got the connection
     """
     try:
         _hold(connected)

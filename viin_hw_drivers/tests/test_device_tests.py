@@ -1,6 +1,7 @@
 """The test of each device from the box with no server, the scanner taken for a keyboard, and the office printer
 that is a label printer."""
 import json
+import logging
 import subprocess
 import threading
 import time
@@ -110,16 +111,18 @@ class DrivenClock:
 
 
 class PrintServerAtTheMercyOfThePrinter:
-    """A print server whose test job and queue go through the states `script(seconds)` gives, from the moment of
-    printing.
+    """A print server whose test job and queue go through the states a script gives, from the moment of printing.
 
-    `script` answers (job state, reasons of the queue) for the seconds that passed since the test page was queued.
-    Jobs named in `older` were queued before the test and stay pending.
+    :param script: called with the seconds that passed since the test page was queued; gives (job state,
+        reasons of the queue)
+    :param older: numbers of jobs queued before the test, which stay pending
+    :param device_uri: the device address of the queue
+    :param message: the state message of the queue
     """
 
     TEST_JOB = 101
 
-    def __init__(self, clock, script, older=(), device_uri='socket://192.168.1.77:9100', message=''):
+    def __init__(self, clock, script, older=(), device_uri='socket://192.0.2.77:9100', message=''):
         self.clock, self.script, self.older, self.device_uri = clock, script, set(older), device_uri
         self.message = message
         self.printed_at = None
@@ -168,15 +171,14 @@ def connecting_for_the_job_ahead_then_never_reached(seconds):
 class PrintQueueSharedWithThePointOfSale(PrintServerAtTheMercyOfThePrinter):
     """The print queue `queue` of a printer the point of sale prints its tickets on.
 
-    `run` stands for the command `lp`, which core's `print_raw` and so the point of sale run to print: it queues the
-    print as the next job and names that job in its request id, `<queue>-<number>`, unless `numbered` is False.
-    `ticket` queues a ticket of the point of sale; `after_the_test_print` runs right after the test print is queued.
-    Every job of the queue is listed by `getJobs`; a ticket stays pending, the test print goes through the states
-    `script` gives.
+    `run` stands for the command `lp` of core's `print_raw`: it queues the print as the next job. `ticket` queues a
+    ticket of the point of sale; `after_the_test_print` runs right after the test print is queued. Every job of the
+    queue is listed by `getJobs`; a ticket stays pending, the test print goes through the states `script` gives.
 
-    `silent` makes the print server stop answering: `before_the_print` holds every question about the queue,
-    `after_taking_the_print` holds `lp` once the test print is queued. A ticket sent while it is silent is queued
-    when `answer_again` is called, before any held call is answered.
+    :param numbered: whether `lp` names the job in its request id, `<queue>-<number>`
+    :param silent: makes the print server stop answering: ``before_the_print`` holds every question about the
+        queue, ``after_taking_the_print`` holds `lp` once the test print is queued; a ticket sent meanwhile is
+        queued when `answer_again` is called
     """
 
     FIRST_JOB = 11
@@ -199,7 +201,7 @@ class PrintQueueSharedWithThePointOfSale(PrintServerAtTheMercyOfThePrinter):
             self.jobs.append(self.FIRST_JOB + len(self.jobs))
             return self.jobs[-1]
 
-    def test_print_queued(self):
+    def queue_the_test_print(self):
         self.test_job = self.queued()
         self.printed_at = self.clock.now
         if self.after_the_test_print:
@@ -208,7 +210,7 @@ class PrintQueueSharedWithThePointOfSale(PrintServerAtTheMercyOfThePrinter):
     def run(self, command, input=None, **_options):  # noqa: A002 - the name subprocess gives it
         assert command[:3] == ['lp', '-d', self.queue], command
         self.sent.append(input)
-        self.test_print_queued()
+        self.queue_the_test_print()
         if self.silent == 'after_taking_the_print':
             self.answers.wait(30)
         given = f'request id is {self.queue}-{self.test_job} (0 file(s))\n' if self.numbered else ''
@@ -216,7 +218,7 @@ class PrintQueueSharedWithThePointOfSale(PrintServerAtTheMercyOfThePrinter):
 
     def printTestPage(self, queue):  # noqa: N802
         self.sent.append(queue)
-        self.test_print_queued()
+        self.queue_the_test_print()
         return self.test_job
 
     def ticket(self):
@@ -314,7 +316,7 @@ class TestPrinterTestFollowsTheJobToThePrinter(DeviceTestCase):
 
         self.assertEqual((answer['status'], answer['detail']['reason']), ('failed', 'printer_not_reached'), answer)
         self.assertEqual(
-            (answer['detail']['connection'], answer['detail']['address']), ('network', '192.168.1.77:9100'))
+            (answer['detail']['connection'], answer['detail']['address']), ('network', '192.0.2.77:9100'))
         self.assertLessEqual(self.waited, self.WINDOW + 1)
         self.assertEqual(self.server.cancelled, [self.server.TEST_JOB])
 
@@ -356,21 +358,21 @@ class TestPrinterTestFollowsTheJobToThePrinter(DeviceTestCase):
         self.assertEqual(self.server.cancelled, [self.server.TEST_JOB])
 
     def test_device_address_with_credentials_is_nowhere_in_the_answer_and_the_address_is_the_host_and_port(self):
-        answer = self.tried_with(never_reached, device_uri='ipp://user:s3cret@10.0.0.9:631/ipp/print')
+        answer = self.tried_with(never_reached, device_uri='ipp://user:s3cret@192.0.2.9:631/ipp/print')
 
         self.assertEqual(answer['detail']['reason'], 'printer_not_reached', answer)
-        self.assertEqual(answer['detail']['address'], '10.0.0.9:631')
+        self.assertEqual(answer['detail']['address'], '192.0.2.9:631')
         self.assertNotIn('s3cret', json.dumps(answer))
         self.assertNotIn('user:', json.dumps(answer))
 
     def test_connection_is_named_only_for_the_kinds_of_device_address_the_box_can_name(self):
         for device_uri, connection, address in (
-                ('hp:/net/HP_LaserJet?ip=10.0.0.5', '', None),
+                ('hp:/net/HP_LaserJet?ip=192.0.2.5', '', None),
                 ('cups-pdf:/', '', None),
                 ('dnssd://Brother%20HL._ipp._tcp.local/', '', None),
                 ('implicitclass://Q/', '', None),
-                ('socket://192.168.1.77:9100', 'network', '192.168.1.77:9100'),
-                ('ipp://10.0.0.9:631/ipp/print', 'network', '10.0.0.9:631'),
+                ('socket://192.0.2.77:9100', 'network', '192.0.2.77:9100'),
+                ('ipp://192.0.2.9:631/ipp/print', 'network', '192.0.2.9:631'),
                 ('usb://HP/LaserJet?serial=ABC123', 'usb', None),
                 ('serial:/dev/ttyUSB0?baud=9600', 'serial', None)):
             with self.subTest(device_uri=device_uri):
@@ -384,9 +386,9 @@ class TestPrinterTestFollowsTheJobToThePrinter(DeviceTestCase):
 class PrintServerThatStopsAnswering(PrintServerAtTheMercyOfThePrinter):
     """A print server that takes the test job and then holds every question about it until `release` is set.
 
-    Each connection the box opens is a new object. The first is the one that holds. The later ones answer at once,
-    as a print server whose printer completes every job, and note each job cancelled on them in `cancelled_on` as
-    (number of the connection, job); a cancel on them waits for `cancel_release`, which is set until a test clears it.
+    Each connection the box opens is a new object; only the first holds. The later ones answer at once, as a
+    print server whose printer completes every job, and note each job cancelled on them in `cancelled_on` as
+    (number of the connection, job); a cancel on them waits for `cancel_release`.
     """
 
     def __init__(self, clock):
@@ -463,8 +465,7 @@ class StartedThreads:
 class PrintServerWithoutAnswerCase(DeviceTestCase):
     """Tests of a device whose calls of the box are left without answer, by the print server or the device.
 
-    The threads each test request starts are kept; `left_behind_ended` sets every event of `releases` and waits for
-    those threads, so that no later test of the printer finds a call of this one still without answer.
+    `left_behind_ended` ends every call a test left without answer, so that no later test finds it still open.
     """
 
     BOUND = 10
@@ -489,9 +490,10 @@ class PrintServerWithoutAnswerCase(DeviceTestCase):
         self.assertEqual([thread for thread in self.started if thread.is_alive()], [], 'threads left without end')
 
     def tried_within_the_bound(self, identifier=box.OFFICE_PRINTER):
-        """(answer, seconds, threads the request started) of a test of the device `identifier`.
+        """Test the device `identifier`.
 
-        Fails when the request is still open after BOUND seconds.
+        :return: (answer, seconds, threads the request started)
+        :raises AssertionError: when the request is still open after BOUND seconds
         """
         found = {}
         asking = threading.Thread(target=lambda: found.update(answer=self.tried(identifier)), daemon=True)
@@ -675,30 +677,30 @@ class TestDevicesPanelConnection(common.BoxCase):
 
     def test_printer_connection_is_named_by_the_kind_of_its_device_address_whatever_core_names_it(self):
         for device_uri, queued, core_names, connection in (
-                ('socket://192.168.1.77:9100', True, 'network', 'network'),
-                ('ipp://10.0.0.9:631/ipp/print', True, 'network', 'network'),
+                ('socket://192.0.2.77:9100', True, 'network', 'network'),
+                ('ipp://192.0.2.9:631/ipp/print', True, 'network', 'network'),
                 ('ipps://printer.example.invalid/ipp/print', True, 'network', 'network'),
-                ('http://10.0.0.8:631/printers/Office', True, 'network', 'network'),
-                ('https://10.0.0.8/ipp/print', True, 'network', 'network'),
-                ('lpd://10.0.0.7/queue', True, 'network', 'network'),
+                ('http://192.0.2.8:631/printers/Office', True, 'network', 'network'),
+                ('https://192.0.2.8/ipp/print', True, 'network', 'network'),
+                ('lpd://192.0.2.7/queue', True, 'network', 'network'),
                 ('usb://HP/LaserJet?serial=ABC123', True, 'direct', 'usb'),
                 ('serial:/dev/ttyS0?baud=9600', True, 'network', 'serial'),
-                ('hp:/net/HP_LaserJet?ip=10.0.0.5', True, 'network', ''),
+                ('hp:/net/HP_LaserJet?ip=192.0.2.5', True, 'network', ''),
                 ('dnssd://Brother%20HL._ipp._tcp.local/', True, 'network', ''),
                 ('implicitclass://Office/', True, 'network', ''),
                 ('socket://', True, 'network', ''),
                 ('usb://Zebra/ZD420?serial=XYZ', False, 'direct', 'usb'),
-                ('socket://10.0.0.3:9100', False, 'network', 'network'),
+                ('socket://192.0.2.3:9100', False, 'network', 'network'),
                 ('serial:/dev/ttyUSB0?baud=9600', False, 'serial', 'serial')):
             with self.subTest(device_uri=device_uri, queued=queued):
                 self.assertEqual(self.described_printer(device_uri, core_names, queued)['connection'], connection)
 
     def test_devices_panel_names_no_device_address_nor_credential_of_a_printer(self):
-        described = json.dumps(self.described_printer('ipp://user:s3cret@10.0.0.9:631/ipp/print', 'network'))
+        described = json.dumps(self.described_printer('ipp://user:s3cret@192.0.2.9:631/ipp/print', 'network'))
 
         self.assertNotIn('s3cret', described)
         self.assertNotIn('user:', described)
-        self.assertNotIn('10.0.0.9', described)
+        self.assertNotIn('192.0.2.9', described)
 
     def test_connection_of_a_device_other_than_a_printer_is_the_one_core_gives(self):
         for device_type, core_names in (('scale', 'serial'), ('keyboard', 'direct'), ('display', 'hdmi')):
@@ -711,7 +713,7 @@ class TestScaleTest(DeviceTestCase):
     def test_scale_test_reads_the_weight_on_the_scale_now(self):
         [scale] = box.wait_for_devices(box.SCALE)
         box.keep_files(self, box.SCALE_FILE)
-        # The scale no longer sends its weight by itself, as when no page reads it: only the test reads it.
+        # A scale sends its weight by itself only while a page reads it; here only the test reads it.
         scale.action({'action': 'stop_reading'})
         self.addCleanup(scale.action, {'action': 'start_reading'})
         box.SCALE_FILE.write_text(f'{WEIGHT}\n')
@@ -749,6 +751,52 @@ class TestScaleTest(DeviceTestCase):
 
         self.assertEqual(answer['status'], 'ok', answer)
         self.assertEqual((answer['detail']['value'], answer['detail']['unit']), (WEIGHT, 'lb'))
+
+
+class TestScaleThatGivesNoReading(DeviceTestCase):
+    """A scale whose port never opened raises when it is asked for a reading: the answer says so, and the log of the
+    box holds no traceback."""
+
+    def setUp(self):
+        super().setUp()
+        [self.scale] = box.wait_for_devices(box.SCALE)
+        broken = mock.patch.object(
+            self.scale, 'action', side_effect=AttributeError("'NoneType' object has no attribute 'write'"))
+        broken.start()
+        self.addCleanup(broken.stop)
+        # The first press of a scale that fails logs once: the box starts for each case with none that failed.
+        common.layer('device_tests')._unread_scales.clear()
+        self.addCleanup(common.layer('device_tests')._unread_scales.clear)
+
+    def test_scale_whose_reading_raises_answers_no_reading_each_time_it_is_asked(self):
+        with self.assertLogs('odoo.addons.viin_hw_drivers.device_tests', 'WARNING'):
+            answers = [self.tried(box.SCALE) for _press in range(3)]
+
+        for answer in answers:
+            self.assertEqual((answer['status'], answer['detail']['reason']), ('failed', 'no_reading'), answer)
+            self.assertIsNone(answer['detail']['value'])
+
+    def test_scale_whose_reading_raises_leaves_one_line_in_the_log_and_no_traceback(self):
+        with self.assertLogs('odoo.addons.viin_hw_drivers.device_tests', 'DEBUG') as logged:
+            for _press in range(3):
+                self.tried(box.SCALE)
+
+        warnings = [record for record in logged.records if record.levelno >= logging.WARNING]
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual([record for record in logged.records if record.exc_info], [])
+
+    def test_scale_that_reads_after_it_failed_answers_with_its_weight(self):
+        data = mock.patch.dict(self.scale.data)
+        data.start()
+        self.addCleanup(data.stop)
+        with self.assertLogs('odoo.addons.viin_hw_drivers.device_tests', 'WARNING'):
+            self.tried(box.SCALE)
+        self.scale.action.side_effect = lambda _data: self.scale.data.update(
+            value=WEIGHT, status={'status': 'connected'})
+
+        answer = self.tried(box.SCALE)
+
+        self.assertEqual((answer['status'], answer['detail']['value']), ('ok', WEIGHT), answer)
 
 
 class TestScannerTakenForAKeyboard(common.BoxCase):
@@ -873,7 +921,7 @@ class TestOfficePrinterThatIsALabelPrinter(common.BoxCase):
 
 
 class TestDeviceListWhileThePrintServerIsSlow(common.BoxCase):
-    """The page reads the device list about every 15 seconds: the print server never holds a read for long."""
+    """The page reads the device list on a clock of its own: the print server never holds a read for long."""
 
     class PrintServer:
         """What the box asks for its print queues: counts the questions, and holds them while `hang` is set."""

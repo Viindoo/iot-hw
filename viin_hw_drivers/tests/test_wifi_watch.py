@@ -1,7 +1,7 @@
 """The box back on the Wi-Fi network it keeps, by itself, while it runs: after a router restart, a weak signal, a
 power cut where the router comes up after the box; and its access point for a person who sets the box up, whom no
-retry of the box ever cuts off, while a device that only stays on the access point holds the box off its network no
-longer."""
+retry of the box ever cuts off, while a device that only stays on the access point never holds the box off its
+network."""
 import http.client
 import shutil
 import signal
@@ -19,12 +19,13 @@ import wifi_common
 
 PASSWORD = 'not-a-real-password'
 PROFILE = 'viindoo-wifi'
-SITE_ADDRESS = '192.168.1.50'
+SITE_ADDRESS = '192.0.2.50'
 STATION = '02:00:5e:00:60:01'
 # The software box has no radio and no network of its own: each device is told apart by an address of its own on the
 # loopback interface, from which it reaches the box.
 STATION_ADDRESS = '127.0.0.20'
 OTHER_ADDRESS = '127.0.0.30'
+# The fixed address of the box on its own access point.
 ACCESS_POINT_ADDRESS = '10.11.12.1'
 # The ways a browser reaches the box page: through the web server of the box, or straight to the box service on its
 # own port, as core's status ticket prints it.
@@ -211,7 +212,7 @@ class TestStartOfABoxThatKeepsNoNetwork(WatchCase):
     unless the box has an address, and waits for none when the box keeps no network."""
 
     def plug(self, carrier):
-        """The network cable of the box, plugged in when `carrier` is '1'."""
+        """Plug the network cable of the box in when `carrier` is '1'."""
         cables = Path(tempfile.mkdtemp(prefix='box-suite-cables-'))
         self.addCleanup(shutil.rmtree, cables, ignore_errors=True)
         (cables / 'eth0').mkdir()
@@ -219,7 +220,10 @@ class TestStartOfABoxThatKeepsNoNetwork(WatchCase):
         self.enterContext(mock.patch.object(self.watch.program, 'INTERFACES', cables))
 
     def start_and_run_core_script(self):
-        """Run the program, then core's script as rc.local does; give how long the program took."""
+        """Run the program, then core's script as rc.local does.
+
+        :return: how long the program took, in seconds
+        """
         began = time.monotonic()
         self.watch.program.main()
         took = time.monotonic() - began
@@ -248,7 +252,7 @@ class TestStartOfABoxThatKeepsNoNetwork(WatchCase):
 
 class TestNetworkForgotten(WatchCase):
 
-    def test_network_forgotten_is_no_longer_looked_for(self):
+    def test_network_forgotten_is_not_looked_for(self):
         # A box left without an address offers the setup network once, as a box that keeps no network does.
         cases = {
             'box off the network': (lambda: (self.keep(blocked=True), self.network.change(addresses='')), 1),
@@ -296,8 +300,13 @@ class TestBoxOnItsAccessPoint(WatchCase):
         self.page_use.begin()
 
     def use_the_page(self, address, way=WEB_SERVER, path=STATUS, host='127.0.0.1', sent=None):
-        """The status of the HTTP answer to a read of the box from the device at `address`, the way `way`. `host`
-        is the name the browser asked for, `sent` the headers it added."""
+        """Read the box from the device at `address`.
+
+        :param way: WEB_SERVER or BOX_SERVICE
+        :param host: the name the browser asked for
+        :param sent: the headers the browser added
+        :return: the status of the HTTP answer
+        """
         import odoo
 
         port = 80 if way == WEB_SERVER else odoo.tools.config['http_port']
@@ -314,12 +323,16 @@ class TestBoxOnItsAccessPoint(WatchCase):
         self.assertEqual(self.use_the_page(address, way, path, **options), 200)
 
     def lease(self, ends):
-        """An address the access point lent to STATION, as dnsmasq keeps it, that ends at `ends`."""
+        """Have the access point lend STATION_ADDRESS to STATION, as dnsmasq keeps it, until `ends` (epoch seconds)."""
         self.watch.leases.write_text('', encoding='utf-8')
         self.watch.lend(STATION, STATION_ADDRESS, ends)
 
     def radio_taken(self, looked=0):
-        """The calls of the looks after the first `looked` calls that took the radio from the access point."""
+        """List the calls that took the radio from the access point.
+
+        :param looked: the number of calls of the history to leave out
+        :return: the calls made after those
+        """
         return [call for _at, call in self.watch.history[looked:]
                 if call[:1] == ['iw'] and 'scan' in call or call[-2:] == ['hostapd', 'stop']
                 or call[:1] == ['nmcli'] and 'up' in call]
@@ -410,7 +423,7 @@ class TestBoxOnItsAccessPoint(WatchCase):
         self.assertEqual(self.watch.when('hostapd', 'stop'), [])
         self.assertTrue(self.network.world()['access_point_running'])
 
-    def test_device_that_only_stays_on_the_access_point_holds_the_box_off_its_network_no_longer(self):
+    def test_device_that_only_stays_on_the_access_point_does_not_hold_the_box_off_its_network(self):
         cases = {
             'device that never opened the box page': lambda: None,
             'device that used the box page long ago': lambda: (
@@ -439,7 +452,7 @@ class TestBoxOnItsAccessPoint(WatchCase):
 
                 self.assertBackOnTheNetworkKept()
 
-    def test_device_that_drops_off_the_access_point_now_and_then_holds_the_box_off_its_network_no_longer(self):
+    def test_device_that_drops_off_the_access_point_now_and_then_does_not_hold_the_box_off_its_network(self):
         self.network.change(networks={'Workshop': PASSWORD}, stations=[STATION])
         self.lease(int(time.time()) + 3600)
 

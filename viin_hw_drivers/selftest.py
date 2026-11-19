@@ -1,21 +1,17 @@
 """The self-test of the box, its diagnostic file, and its clock.
 
-The self-test has one line per layer the box depends on, from its network to
-the layer itself. Each line is ok, warning, failed, neutral (nothing to do, and
-nothing wrong) or pending (still being looked at), with one reason and at most
-one action, both keys that the page turns into words. It renders without the
-server: what needs the network is looked at by one probe at a time, which the
-caller waits for a few seconds at most.
+The self-test has one line per layer the box depends on, from its network to the layer itself. Each line is ok,
+warning, failed, neutral (nothing to do, and nothing wrong) or pending (still being looked at), with one reason
+and at most one action, both keys that the page turns into words. It renders without the server: what needs the
+network is looked at by one probe at a time, which the caller waits for no longer than PROBE_WAIT.
 
-A line that fails is written once to the box log, which core sends to the
-server, and once more when it is well again. The last result is kept in the
-state file of the box.
+A line that fails is written once to the box log, which core sends to the server, and once more when it is well
+again. The last result is kept in the state file of the box.
 
-The clock of a board without a battery starts wrong on a network without a
-time server, and then no certificate can be verified. The box can take the
-time from its own server: on a paired box, at start, over a connection whose
-certificate is checked in everything but its dates; before pairing, at the
-installer's request, from the server he names, shown to him before it is set.
+The clock of a board without a battery starts wrong on a network without a time server, and then no certificate
+can be verified. The box can take the time from its own server: on a paired box, at start, over a connection whose
+certificate is checked in everything but its dates; before pairing, at the installer's request, from the server
+he names, shown to him before it is set.
 """
 import ctypes
 import datetime
@@ -75,7 +71,7 @@ PERIOD = 300
 # How often the box looks at its clock while it is not synchronised, and for how long after it started.
 CLOCK_PERIOD = 30
 CLOCK_WATCH = 3600
-# A box that has not reported yet this long after it started is not just starting any more.
+# A box that has not reported yet this long after it started is not just starting.
 STARTING = 120
 CERTIFICATE_ENDING = datetime.timedelta(days=30)
 # For this long after the box made a certificate in place of one it had made, a browser that accepted that one is
@@ -131,7 +127,10 @@ def _conf(key):
 
 
 def _origin(address):
-    """(scheme, host, port) of the address of a server; None when it is none."""
+    """The scheme, host and port of the address of a server.
+
+    :return: ``(scheme, host, port)``, or ``None`` when the address is not an http or https address
+    """
     try:
         parts = urlsplit(str(address or ''))
         port = parts.port
@@ -150,8 +149,6 @@ def _is_address(host):
     return True
 
 
-# ------------------------------------------------------------------------------------------------ clock
-
 class _Timex(ctypes.Structure):
     """The `struct timex` of Linux, as far as its status; room is left for the fields that follow."""
     _fields_ = [
@@ -162,7 +159,10 @@ class _Timex(ctypes.Structure):
 
 
 def clock_synchronised():
-    """Whether the kernel says a time server set the clock; None when it cannot be asked."""
+    """Whether the kernel says a time server set the clock.
+
+    :return: ``None`` when the kernel cannot be asked
+    """
     try:
         libc = ctypes.CDLL(None, use_errno=True)
         timex = _Timex()
@@ -189,9 +189,9 @@ def _context_without_dates():
 
 
 def _server_answer(scheme, host, port, context):
-    """(HTTP status, the time of the server in UTC or None) of a HEAD request on the root of a server.
+    """Make a HEAD request on the root of a server, sending nothing of the box: no credential, no cookie.
 
-    Nothing of the box is sent: no credential, no cookie.
+    :return: ``(HTTP status, the time of the server in UTC or None)``
     """
     if scheme == 'https':
         connection = http.client.HTTPSConnection(host, port, timeout=CONNECT_TIMEOUT, context=context)
@@ -230,10 +230,12 @@ def _failure(error):
 
 
 def _server_time(server, verified):
-    """(time of the server or None, whether its certificate was checked, the reason when there is no time).
+    """The time a server gives.
 
-    `verified`: over https the certificate is checked in everything but its
-    dates, and a server that fails that check gives no time.
+    :param verified: whether over https the certificate is checked in everything but its dates; a server that
+        fails that check gives no time
+    :return: ``(time of the server or None, whether its certificate was checked, the reason when there is no
+        time)``
     """
     origin = _origin(server)
     if not origin:
@@ -255,7 +257,10 @@ def _server_time(server, verified):
 
 
 def _clock_source(server_url):
-    """(address of the server to read the time from, whether its certificate must be checked) or (None, reason)."""
+    """The server to read the time from.
+
+    :return: ``(address, whether its certificate must be checked)``, or ``(None, reason)``
+    """
     own = _conf(trust.SERVER_KEY)
     if pairing.is_paired() and own:
         given = str(server_url or '').strip()
@@ -277,12 +282,14 @@ def _clock_source(server_url):
 def read_server_clock(server_url=None):
     """The time of the server of the box, beside the time of the box, for a person to compare before setting it.
 
-    On a paired box the server is its own and `server_url` may only name it; on
-    another box `server_url` names the server, whose word is then unverified.
-    {'status': 'read', 'box_time', 'server_time', 'difference' (seconds the
-    server is ahead), 'synchronised', 'verified', 'server'} or {'status':
-    'failed', 'reason'}: server_missing, invalid_address, other_server,
-    server_not_found, server_unreachable, server_certificate_untrusted, no_time.
+    On a paired box the server is its own and `server_url` may only name it; on another box `server_url` names the
+    server, whose word is then unverified.
+
+    :return: ``{'status': 'read', 'box_time', 'server_time', 'difference' (seconds the server is ahead),
+        'synchronised', 'verified', 'server'}``, or ``{'status': 'failed', 'reason'}`` with a reason of
+        server_missing, invalid_address, other_server, server_not_found, server_unreachable,
+        server_certificate_untrusted or no_time
+    :rtype: dict
     """
     server, checked = _clock_source(server_url)
     if server is None:
@@ -303,7 +310,10 @@ def read_server_clock(server_url=None):
 
 
 def _set_clock(moment):
-    """Set the clock of the box to `moment` (UTC); True when the clock then says so."""
+    """Set the clock of the box to `moment` (UTC).
+
+    :return: whether the clock says `moment` afterwards
+    """
     target = moment.replace(tzinfo=datetime.timezone.utc).timestamp()
     try:
         done = subprocess.run(
@@ -316,10 +326,12 @@ def _set_clock(moment):
 def set_clock_from_server(server_url=None):
     """Read the time of the server again, as `read_server_clock` does, and set the clock of the box to it.
 
-    Never on a clock a time server keeps: {'status': 'refused', 'reason':
-    'clock_synchronised'}. {'status': 'set', 'box_time', 'server_time',
-    'verified'}, or the failure of `read_server_clock`, or {'status': 'failed',
-    'reason': 'box_error'} when the box could not set its clock.
+    The clock a time server keeps is never set.
+
+    :return: ``{'status': 'set', 'box_time', 'server_time', 'verified'}``; ``{'status': 'refused', 'reason':
+        'clock_synchronised'}``; ``{'status': 'failed', 'reason': 'box_error'}`` when the box could not set its
+        clock; or the failure of `read_server_clock`
+    :rtype: dict
     """
     if clock_synchronised():
         return {'status': 'refused', 'reason': 'clock_synchronised'}
@@ -348,8 +360,8 @@ def set_clock_from_server(server_url=None):
 def _clock_at_start():
     """On a paired box whose clock no time server keeps, take the time of its server when it differs.
 
-    True once there is nothing left to do: a time server keeps the clock, the
-    kernel cannot say, or the clock was set or found right.
+    :return: whether there is nothing left to do: a time server keeps the clock, the kernel cannot say, or the
+        clock was set or found right
     """
     synchronised = clock_synchronised()
     if synchronised is not False:
@@ -365,8 +377,6 @@ def _clock_at_start():
         return True
     return set_clock_from_server()['status'] == 'set'
 
-
-# ------------------------------------------------------------------------------------------------ probe
 
 def _probe(server):
     """What the network says of the server of the box: name, reach, time, certificate."""
@@ -430,7 +440,10 @@ class _Probes:
         self.running = None
 
     def get(self, server, wait, refresh=False):
-        """(the latest probe of `server` or None, whether one is under way)."""
+        """The latest probe of `server`, once one is done or `wait` seconds have passed.
+
+        :return: ``(the probe or None, whether one is under way)``
+        """
         with self.lock:
             stale = (self.result is None or self.result['server'] != server
                      or time.monotonic() - self.finished > PROBE_FRESH)
@@ -461,10 +474,11 @@ class _Probes:
 _probes = _Probes()
 
 
-# ------------------------------------------------------------------------------------------------ lines
-
 def _interfaces():
-    """[{'name', 'kind': wired, wifi or other, 'addresses'}] of the interfaces that have an IPv4 address."""
+    """The interfaces that have an IPv4 address.
+
+    :return: a list of ``{'name', 'kind' (wired, wifi or other), 'addresses'}``
+    """
     found = []
     for name in netifaces.interfaces():
         addresses = [entry.get('addr') for entry in netifaces.ifaddresses(name).get(netifaces.AF_INET, ())]
@@ -658,11 +672,13 @@ def _covers(names, host):
 def browser_address():
     """The address the box gives to browsers - the one it reports to its server - and which kind it is.
 
-    {'address', 'kind'}: the kind is where identity chose the address from - own_name (the name the installer typed
-    for the box, which the certificate of the customer or one the box made may cover), address,
-    local_name (`<hostname>.local`, the box has no browsable address of the site). While the seam that chooses it
-    is not in place, core's value stands and is told apart by comparison: own_name, address or name (any other
-    name).
+    While the seam that chooses the address is not in place, core's value stands and is told apart by comparison.
+
+    :return: ``{'address', 'kind'}``; `kind` is where identity chose the address from: own_name (the name the
+        installer typed for the box, which the certificate of the customer or one the box made may cover),
+        address, local_name (`<hostname>.local`, the box has no browsable address of the site), or name (any
+        other name core gives)
+    :rtype: dict
     """
     chosen = identity.reported_address()
     address = str(chosen['address'] or '')
@@ -681,11 +697,12 @@ def browser_address():
 def _served_certificate(own):
     """Which certificate a browser gets at an address other than the Viindoo name, and until when.
 
-    {'certificate_kind': box or customer; 'certificate_ends': the end date of that certificate as
-    YYYY-MM-DDTHH:MM:SSZ}: the one the box serves (`own`). A certificate the box made adds 'certificate_made_at'
-    (when) and 'accept_again': whether it replaced an earlier certificate the box had made, recently enough that a
-    browser which accepted that one asks for it once more. The first certificate of a box, and one that replaced the
-    image's, a missing or the customer's certificate, never asks it.
+    :param own: the certificate the box serves
+    :return: ``{'certificate_kind' (box or customer), 'certificate_ends' (YYYY-MM-DDTHH:MM:SSZ)}``; a certificate
+        the box made adds ``certificate_made_at`` and ``accept_again``, whether it replaced an earlier certificate
+        of the box recently enough that a browser which accepted that one asks again. The first certificate of a
+        box, and one that replaced the image's, a missing or the customer's certificate, never asks it.
+    :rtype: dict
     """
     served = {'certificate_kind': own['kind'], 'certificate_ends': own['expiry']}
     if own.get('made_at'):
@@ -698,9 +715,8 @@ def _served_certificate(own):
 def _address_not_covered_line(certificate, details):
     """The line for a certificate that does not cover the address browsers are given.
 
-    The customer's own certificate is theirs to replace. The box's own is replaced by the box: shortly after an
-    address appears, it is being made and nothing is asked of anyone; when making it failed, a restart makes the
-    box try again; when the box has no reason to make one, only support can say why.
+    The customer's own certificate is theirs to replace; the box's own is replaced by the box, and the action
+    asked of a person depends on whether making it failed.
     """
     if certificate['kind'] == 'customer':
         return _line('browser_address', WARNING, 'certificate_not_for_address', 'renew_own_certificate', **details)
@@ -743,10 +759,11 @@ def _browser_address_line():
 
 
 def viindoo_name():
-    """The Viindoo name of the box as its client left it: {'name', 'not_after', 'state', 'reason', 'line'}.
+    """The Viindoo name of the box as its client left it.
 
-    `state` and `reason` are the last answer of the server to the question for
-    a name; `line` is the reason the self-test gives.
+    :return: ``{'name', 'not_after', 'state', 'reason', 'line'}``; `state` and `reason` are the last answer of
+        the server to the question for a name, `line` the reason the self-test gives
+    :rtype: dict
     """
     record = update.read_state().get(PUBLIC_NAME_KEY)
     record = record if isinstance(record, dict) else {}
@@ -912,8 +929,6 @@ def _layer_line(state):
     return _line('layer', PENDING, 'starting', **details)
 
 
-# ------------------------------------------------------------------------------------------------ the self-test
-
 def _lines(context):
     """Each line of the self-test, in the order of LINES; a line that cannot be worked out fails on its own."""
     server, probe, paired = context['server'], context['probe'], context['paired']
@@ -982,13 +997,14 @@ def _run(wait, refresh):
 
 
 def run(wait=PROBE_WAIT, refresh=False):
-    """The self-test: {'state', 'at', 'probed_at', 'probing', 'failing', 'lines'}.
+    """The self-test of the box.
 
-    `state` is the worst state of a line (neutral counts as ok), `failing` the
-    ids of the lines that are warning or failed, `lines` one {'id', 'state',
-    'reason', 'action', 'details'} per id of LINES, in that order. What needs
-    the server is waited for `wait` seconds at most; `refresh` asks for a new
-    look at the server even when the last one is recent.
+    :param wait: seconds to wait at most for what needs the server
+    :param refresh: look at the server anew even when the last look is recent
+    :return: ``{'state', 'at', 'probed_at', 'probing', 'failing', 'lines'}``; `state` is the worst state of a line
+        (neutral counts as ok), `failing` the ids of the lines that are warning or failed, `lines` one
+        ``{'id', 'state', 'reason', 'action', 'details'}`` per id of LINES, in that order
+    :rtype: dict
     """
     return _run(wait, refresh)[0]
 
@@ -1027,7 +1043,7 @@ def _note(result):
 
 
 def _keep_last_result():
-    """Write the latest result to the state file, apart from any request: the card may be busy for minutes."""
+    """Write the latest result to the state file, apart from any request: the card may be busy."""
     while True:
         _keep_wanted.wait()
         _keep_wanted.clear()
@@ -1040,7 +1056,10 @@ def _keep_last_result():
 
 
 def last_kept():
-    """The last self-test the box kept in its state file - {'at', 'state', 'lines'} - or None."""
+    """The last self-test the box kept in its state file.
+
+    :return: ``{'at', 'state', 'lines'}``, or ``None`` when none is kept
+    """
     record = update.read_state().get(STATE_KEY)
     return record if isinstance(record, dict) else None
 
@@ -1066,13 +1085,12 @@ def _watch():
         time.sleep(CLOCK_PERIOD if not clock_done and now - started < CLOCK_WATCH else min(PERIOD, 60))
 
 
-# ------------------------------------------------------------------------------------------------ page data
-
 def status(wait=PROBE_WAIT, refresh=False):
     """What the page of the box shows, under Server, Network, Devices, Software and Advanced, with the self-test.
 
-    Keys: 'selftest' (as `run` gives it), 'server', 'network', 'kept_wifi' (as `_kept_wifi` gives it), 'devices',
-    'software', 'advanced', 'layer', 'drivers'.
+    :return: a dict with the keys ``selftest`` (as `run` gives it), ``server``, ``network``, ``kept_wifi`` (as
+        `_kept_wifi` gives it), ``devices``, ``software``, ``advanced``, ``layer`` and ``drivers``
+    :rtype: dict
     """
     result, context = _run(wait, refresh)
     software = context['software']
@@ -1108,15 +1126,13 @@ def status(wait=PROBE_WAIT, refresh=False):
     }
 
 
-# ------------------------------------------------------------------------------------------------ diagnostic file
-
 def _kept_wifi():
-    """The Wi-Fi network the box keeps: {'card_copy': bool or None, 'profile_network': name or None}.
+    """The Wi-Fi network the box keeps; only the name is read, never the password.
 
-    `card_copy` is whether the copy of the profile that survives a restart
-    exists (None when that cannot be told); `profile_network` is the name held
-    by the profile now in memory, which outlives a forgotten network until the
-    box restarts. Only the name is read, never the password.
+    :return: ``{'card_copy', 'profile_network'}``; `card_copy` is whether the copy of the profile that survives a
+        restart exists (``None`` when that cannot be told), `profile_network` the name held by the profile in
+        memory, which outlives a forgotten network until the box restarts (``None`` when it holds none)
+    :rtype: dict
     """
     try:
         copies = [subprocess.run(['sudo', '-n', 'test', '-e', str(path)], capture_output=True, check=False,
@@ -1186,14 +1202,15 @@ def _secrets():
 def diagnostic():
     """The diagnostic file: what support needs to read the box without a shell, as a JSON text, and its file name.
 
-    The self-test, the page data, the integrity of the layer, the release
-    check, the configuration but its secrets, the network and the end of the
-    box log. Registration and live channel moments come both as seconds since
-    1970 on the clock of the box and as ages on its monotonic clock, with the
-    box time at writing and the state of the clock line: the ages stay right
-    when the clock was corrected after the moment, the seconds may not. No credential, settings code,
-    password or private key: every value the configuration keeps under such a key is replaced
-    wherever it appears.
+    It holds the self-test, the page data, the integrity of the layer, the release check, the configuration but
+    its secrets, the network and the end of the box log. Registration and live channel moments come both as
+    seconds since 1970 on the clock of the box and as ages on its monotonic clock, with the box time at writing
+    and the state of the clock line: the ages stay right when the clock was corrected after the moment, the
+    seconds may not. No credential, settings code, password or private key appears: every value the configuration
+    keeps under such a key is replaced wherever it appears.
+
+    :return: ``(the JSON text, the file name)``
+    :rtype: tuple
     """
     page = status(wait=CONNECT_TIMEOUT * 3)
     helpers = _helpers()

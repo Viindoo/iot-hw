@@ -80,7 +80,10 @@ def declare_confirms_readings():
 
 
 def server_address(address):
-    """`scheme://host[:port]` of a server address as a person types it, https unless it says http; else ValueError."""
+    """The `scheme://host[:port]` of a server address as a person types it, https unless it says http.
+
+    :raises ValueError: when `address` is not a server address
+    """
     address = str(address or '').strip()
     parts = urlsplit(address if '://' in address else f'https://{address}')
     # Reading the port raises ValueError when it is not a number.
@@ -92,7 +95,11 @@ def server_address(address):
 
 
 def parse_link(link):
-    """(server address, pairing code) of a pairing link `<server address>/#pair=<code>`; ValueError otherwise."""
+    """The server address and the pairing code of a pairing link `<server address>/#pair=<code>`.
+
+    :return: ``(server address, pairing code)``
+    :raises ValueError: when `link` is not a pairing link
+    """
     link = str(link or '').strip()
     address, _separator, fragment = link.partition('#')
     key, _separator, code = fragment.partition('=')
@@ -111,8 +118,8 @@ def is_paired():
 def changing_server():
     """Run the block as the only change of the server of the box under way; it waits for the one that is.
 
-    A pairing attempt is such a change. What allows the change is asked inside
-    the block, so that no other change comes between that answer and this one.
+    A pairing attempt is such a change. What allows a change is asked inside the
+    block, so that no other change comes between that answer and this one.
     """
     with _attempt:
         yield
@@ -121,47 +128,40 @@ def changing_server():
 def pair(link=None, server_url=None, code=None, trust_fingerprint=None, authority=None, permitted=None):
     """Connect this box to a server with a one-time pairing code, given as `link` or as `server_url` and `code`.
 
-    Returns one of:
-
-    * {'status': 'paired', 'server', 'box_name'} once server and credential are
-      stored the way core stores them and the box service is asked to restart;
-    * {'status': 'refused', 'reason'} with the reason of the server -
-      invalid_code, expired, already_used, server_error, identifier_exists with
-      'box_name' - or unknown_reason with 'server_reason': the word of the
-      server when it is a lowercase key of at most 40 characters, else
-      'unspecified';
-    * {'status': 'failed', 'reason'} when the box got no answer it understands:
-      invalid_link, invalid_address and code_missing (address and code given
-      apart), invalid_authority, authority_not_root, server_not_found,
-      server_unreachable, server_not_compatible, box_error (another change of
-      the server is in progress, or the box could not store), box_clock_wrong
-      with 'box_time' and 'server_time', or server_certificate_untrusted.
-
-    server_certificate_untrusted always carries 'fingerprint', 'subject',
-    'expiry' and 'names' of one certificate, 'problem' - unknown_authority,
-    private_authority, name_mismatch, expired, not_yet_valid or invalid - and
-    'trustable'. A certificate no public authority vouches for is never
-    accepted on its own. When 'trustable' is true the four keys describe what
-    a person must confirm - the certificate of the server when it vouches for
-    itself, the root authority given as `authority` when it vouches for the
-    server - and the caller calls again with `trust_fingerprint` set to that
-    fingerprint. When it is false they describe the certificate of the server;
-    with private_authority the caller may call again with `authority`, the
-    certificate of the root authority that issued it, as PEM text. The text
-    may hold several roots: the first one that vouches for the server is the
-    one described, confirmed and stored, and when none does the answer is the
-    one for no authority at all. A text that holds no certificate fails as
-    invalid_authority, one that holds no root as authority_not_root.
-
-    Nothing is stored unless the status is `paired`. The certificates trusted
-    for the server the box has do not vouch for this one, and once `paired` the
+    Nothing is stored unless the status is ``paired``. The certificates trusted
+    for the server the box has do not vouch for this one, and once ``paired`` the
     box trusts, for this server alone, the certificate confirmed in this call
-    and no other. Each attempt that does not pair leaves one warning line.
+    and no other. A certificate no public authority vouches for is never
+    accepted on its own. Each attempt that does not pair leaves one warning line.
 
-    `permitted`, when given, is asked once this attempt is the only change of
-    the server of the box under way, so that no other change comes between its
-    answer and the pairing: unless it says yes, nothing is attempted and None
-    is returned.
+    :param trust_fingerprint: the fingerprint of the certificate a person confirmed, sent back after a
+        ``server_certificate_untrusted`` answer whose ``trustable`` is true
+    :param authority: the certificate of the root authority that issued the certificate of the server, as PEM
+        text. The text may hold several roots: the first one that vouches for the server is the one described,
+        confirmed and stored, and when none does the answer is the one for no authority at all
+    :param permitted: a callable asked once this attempt is the only change of the server of the box under way,
+        so that no other change comes between its answer and the pairing
+    :return: ``None`` when `permitted` does not say yes and nothing is attempted; otherwise one of
+
+        * ``{'status': 'paired', 'server', 'box_name'}`` once server and credential are stored the way core
+          stores them and the box service is asked to restart;
+        * ``{'status': 'refused', 'reason'}`` with the reason of the server: invalid_code, expired,
+          already_used, server_error, identifier_exists with ``box_name``, or unknown_reason with
+          ``server_reason``, the word of the server when it is a lowercase key of at most 40 characters, else
+          ``unspecified``;
+        * ``{'status': 'failed', 'reason'}`` when the box got no answer it understands: invalid_link,
+          invalid_address and code_missing (address and code given apart), invalid_authority (the text holds
+          no certificate), authority_not_root (it holds no root), server_not_found, server_unreachable,
+          server_not_compatible, box_error (another change of the server is in progress, or the box could not
+          store), box_clock_wrong with ``box_time`` and ``server_time``, or server_certificate_untrusted.
+
+        server_certificate_untrusted always carries ``fingerprint``, ``subject``, ``expiry`` and ``names`` of
+        one certificate, ``problem`` (unknown_authority, private_authority, name_mismatch, expired,
+        not_yet_valid or invalid) and ``trustable``. When ``trustable`` is true the four keys describe what a
+        person must confirm - the certificate of the server when it vouches for itself, the root authority
+        given as `authority` when it vouches for the server - and the caller calls again with
+        `trust_fingerprint` set to that fingerprint. When it is false they describe the certificate of the
+        server; with private_authority the caller may call again with `authority`.
     """
     if not _attempt.acquire(blocking=False):
         _logger.warning('A pairing attempt was refused: another change of the server of the box is in progress')
@@ -179,7 +179,10 @@ def pair(link=None, server_url=None, code=None, trust_fingerprint=None, authorit
 
 
 def _pair(link, server_url, code, trust_fingerprint, authority):
-    """(the answer of `pair`, the address of the server the caller named or '')."""
+    """Attempt the pairing of `pair`.
+
+    :return: ``(answer, server)``: the answer of `pair` and the address of the server the caller named, or ``''``
+    """
     try:
         server, code = _named(link, server_url, code)
     except _NotPaired as refusal:
@@ -204,7 +207,11 @@ def _pair(link, server_url, code, trust_fingerprint, authority):
 
 
 def _named(link, server_url, code):
-    """(server address, pairing code) of what the caller gave; _NotPaired when it names none."""
+    """The server address and the pairing code of what the caller gave.
+
+    :return: ``(server address, pairing code)``
+    :raises _NotPaired: when it names none
+    """
     if link or not (server_url or code):
         try:
             return parse_link(link)
@@ -221,7 +228,11 @@ def _named(link, server_url, code):
 
 
 def _root_authority(text):
-    """The roots, in order, of the PEM text a person gave as the authority of a server; None when none was given."""
+    """The roots, in order, of the PEM text a person gave as the authority of a server.
+
+    :return: the roots; ``None`` when none was given
+    :raises _NotPaired: when the text holds no certificate or no root
+    """
     text = str(text or '').strip()
     if not text:
         return None
@@ -281,7 +292,11 @@ def _untrusted(certificate, problem, trustable):
 
 
 def _exchange(server, code, trust_fingerprint, authorities):
-    """(answer of the server, certificate to trust or None) for a `paired` answer; _NotPaired for anything else."""
+    """Ask the server to pair the box.
+
+    :return: ``(answer of the server, certificate to trust or None)`` for a ``paired`` answer
+    :raises _NotPaired: for any other answer
+    """
     address = urlsplit(server)
     secure = address.scheme == 'https'
     host, port = address.hostname, address.port or (443 if secure else 80)
@@ -304,9 +319,12 @@ def _exchange(server, code, trust_fingerprint, authorities):
 
 
 def _trusted_by_installer(host, port, problem, trust_fingerprint, authorities):
-    """The certificate to trust for the server, once a person confirmed it: its own, or the root that signs its chain.
+    """The certificate to trust for the server once a person confirmed it: its own, or the root that signs its chain.
 
-    Whichever it is, trusting it must be all the box needs to accept the server.
+    Whichever it is, trusting it is all the box needs to accept the server.
+
+    :raises _NotPaired: ``server_certificate_untrusted`` until the certificate is trustable and confirmed, or
+        ``box_clock_wrong``
     """
     presented = trust.presented_certificate(host, port)
     candidate, remaining = presented, 'unknown_authority'
@@ -385,7 +403,7 @@ def clear_viindoo_configuration(helpers=None):
     the box made, the one of the image, none - the name goes too, so that a
     box moved to another site does not send its browsers to the old one.
 
-    `helpers` is core's helper module when core is not loaded yet.
+    :param helpers: core's helper module when core is not loaded yet
     """
     helpers = helpers or core('tools.helpers')
     trust.forget_certificates(helpers)
@@ -400,7 +418,10 @@ def clear_viindoo_configuration(helpers=None):
 
 
 def reset_file():
-    """The file by which a person with the card in hand asks the box to forget its server, or None."""
+    """The file by which a person with the card in hand asks the box to forget its server.
+
+    :return: the file; ``None`` when there is none
+    """
     for partition in BOOT_PARTITIONS:
         for name in RESET_FILES:
             candidate = Path(partition, name)
@@ -412,10 +433,12 @@ def reset_file():
 def reset(helpers, marker):
     """Forget the server, its credential - and with it the lock - and what the layer kept for it; delete `marker`.
 
-    What the layer kept is what `clear_viindoo_configuration` forgets.
+    What the layer kept is what `clear_viindoo_configuration` forgets. Runs before core is loaded, so that core
+    starts as the box it has become.
 
-    Runs before core is loaded, so that core starts as the box it has become;
-    `helpers` is core's helper module, which the caller loaded on its own.
+    :param helpers: core's helper module, which the caller loaded on its own
+    :param marker: the reset file asked for
+    :raises OSError: when `marker` could not be deleted
     """
     helpers.disconnect_from_server()
     clear_viindoo_configuration(helpers)

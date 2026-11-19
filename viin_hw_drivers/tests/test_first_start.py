@@ -25,7 +25,12 @@ class FirstStartCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.directory, True)
 
     def fresh_copy(self, name, serial=SERIAL, configuration_text=None):
-        """The root of a box as the image leaves it before its first start: an empty master password."""
+        """Build the root of a box as the image leaves it before its first start, with an empty master password.
+
+        :param serial: content of the serial-number file of the board; ``None`` writes none
+        :param configuration_text: content of ``odoo.conf``; the image's own when ``None``
+        :return: the root of the box
+        """
         root = Path(self.directory, name)
         (root / 'home' / 'pi').mkdir(parents=True)
         (root / 'etc').mkdir()
@@ -51,7 +56,7 @@ class FirstStartCase(unittest.TestCase):
         return re.findall(r'^admin_passwd[ \t]*=[ \t]*(.*)$', text, re.MULTILINE)
 
     def master_password(self, root):
-        """The one master password the configuration of `root` holds."""
+        """Return the master password of `root`, failing unless its configuration holds exactly one."""
         found = self.master_passwords(root)
         self.assertEqual(len(found), 1, found)
         return found[0]

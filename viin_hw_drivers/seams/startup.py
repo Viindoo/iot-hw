@@ -46,7 +46,10 @@ class ThreadGate:
             threading.Thread.start, self._start = self._start, None
 
     def release(self):
-        """Start the held threads in the order they were started in, the withheld ones excepted; return them."""
+        """Start the held threads in the order they were started in, the withheld ones excepted.
+
+        :return: the threads started
+        """
         released = [thread for thread in self.held if thread not in self.withheld and thread.ident is None]
         self.held = []
         for thread in released:
@@ -110,11 +113,12 @@ _update_check_runs = threading.Lock()
 def set_update_check(check):
     """Give the function that looks for a release of the box software.
 
-    It runs on a thread of its own each time core asks for its update check - at
-    the start of a box that has a server, then every night - so that neither
-    registration nor the device loop ever waits on it. One run at a time: a call
-    that comes while it runs starts none. A box without a server takes its
-    first look at start in `update`, by the same function.
+    It runs on a thread of its own each time core asks for its update check, so
+    that neither registration nor the device loop ever waits on it. One run at a
+    time: a call that comes while it runs starts none. A box without a server
+    takes its first look at start in `update`, by the same function.
+
+    :param check: the function, called without arguments
     """
     _update_check[:] = [check]
 

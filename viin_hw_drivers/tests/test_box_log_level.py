@@ -16,7 +16,10 @@ class TestBoxWideLogLevel(common.BoxCase):
         self.assertEqual(answer.get('status'), 'success', answer)
 
     def requests_logged_for_three_pings(self):
-        """How many lines the web server wrote to the log of the box for three requests to the box."""
+        """Send three requests to the box.
+
+        :return: how many lines the web server wrote to the log of the box for them
+        """
         import odoo
 
         common.serve()
@@ -32,7 +35,6 @@ class TestBoxWideLogLevel(common.BoxCase):
 
     def setUp(self):
         super().setUp()
-        # A box set to log requests, as a box whose installer looked at them.
         self.set_level(SOFTWARE_LEVEL, 'info')
         self.set_level(BOX_LEVEL, 'info')
         self.addCleanup(self.set_level, SOFTWARE_LEVEL, 'warning')

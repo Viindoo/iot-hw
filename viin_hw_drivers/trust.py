@@ -80,7 +80,7 @@ ADDRESS_LOOK_PERIOD = 15
 # How long the keeper waits to try again after a look that failed.
 FAILED_LOOK_WAIT = 300
 # How many characters of the text of a failure each one-line repeat of it carries: the diagnostic file keeps the end
-# of the log only, which may no longer hold the full record of a failure that comes back look after look.
+# of the log only, which may not hold the full record of a failure that comes back look after look.
 REPEAT_TEXT_LIMIT = 300
 WEB_SERVER_RESTARTS = 3
 # Makes the running web server read its certificate again; fails when no web server runs.
@@ -132,8 +132,7 @@ _failure_logged = {'last': None}
 
 
 def _exclusive(function):
-    """Run `function` with no other change of a pair the web server reads, and no reload of it, under way: the
-    keeper, the watcher of the addresses, a request of the customer and the client of the Viindoo name take turns."""
+    """Run `function` with no other change of a pair the web server reads, and no reload of it, under way."""
     @functools.wraps(function)
     def exclusive(*arguments, **options):
         with _changing:
@@ -205,7 +204,10 @@ def _warn_once(subject, message, *arguments):
 
 
 def _origin(address):
-    """(scheme, host, port) of the address of a server; None when it is none."""
+    """The scheme, host and port of the address of a server.
+
+    :return: ``(scheme, host, port)``; ``None`` when `address` is not one
+    """
     try:
         parts = urlsplit(str(address or ''))
         port = parts.port
@@ -227,7 +229,11 @@ def _pins_path(helpers):
 
 
 def _stored(helpers):
-    """(address of the server they were accepted for, certificates) of the trust file; (None, []) without one."""
+    """What the trust file holds.
+
+    :return: ``(address of the server the certificates were accepted for, certificates)``; ``(None, [])`` without
+        a trust file
+    """
     try:
         data = _pins_path(helpers).read_bytes()
     except OSError as error:
@@ -287,10 +293,13 @@ def _store_pins(server, certificates):
 
 
 def trust_certificate(certificate):
-    """Trust one more certificate (an object, or PEM or DER bytes) for the server this box has.
+    """Trust one more certificate for the server this box has.
 
-    It then vouches for the connections of the box to that server, and for no
-    other host. Returns its fingerprint; ValueError when the box has no server.
+    It then vouches for the connections of the box to that server, and for no other host.
+
+    :param certificate: a certificate object, or PEM or DER bytes
+    :return: its fingerprint
+    :raises ValueError: when the box has no server
     """
     helpers = core('tools.helpers')
     server = helpers.get_conf(SERVER_KEY)
@@ -309,8 +318,9 @@ def trust_certificate(certificate):
 def replacing_certificates(server, certificates):
     """Trust `certificates`, and nothing else, for `server`, around the block that makes it the server of this box.
 
-    `server` is the address the block stores. When the store or the block
-    fails, the box trusts again what it trusted before, for the server it had.
+    When the store or the block fails, the box trusts again what it trusted before, for the server it had.
+
+    :param server: the address the block stores
     """
     known = _stored(core('tools.helpers'))
     try:
@@ -326,7 +336,10 @@ def replacing_certificates(server, certificates):
 
 
 def forget_certificates(helpers=None):
-    """Trust public authorities only again. `helpers` is core's helper module when core is not loaded yet."""
+    """Trust public authorities only again.
+
+    :param helpers: core's helper module when core is not loaded yet
+    """
     helpers = helpers or core('tools.helpers')
     helpers.unlink_file(str(_pins_path(helpers)))
     if helpers.get_conf(PINS_KEY):
@@ -359,8 +372,9 @@ def ca_bundle_path():
 
     For the connections of the box to that server and no other: `authorities_for`
     tells them apart. It is the file of the public authorities itself as long as
-    nothing else is trusted, and a file in memory-backed storage otherwise;
-    OSError when that file cannot be written.
+    nothing else is trusted.
+
+    :raises OSError: when the file cannot be written
     """
     pins = b''.join(map(_pem, _pins()))
     if not pins:
@@ -380,9 +394,9 @@ def _authorities(scheme, host, port):
 def authorities_for(url):
     """Path of the PEM file that verifies the https server at `url`.
 
-    `ca_bundle_path()` when `url` is on the server of this box, the public
-    authorities for any other host: a certificate the installer trusted never
-    vouches for another host.
+    A certificate the installer trusted never vouches for another host than the server of this box.
+
+    :return: `ca_bundle_path()` when `url` is on the server of this box, the public authorities otherwise
     """
     return _authorities(*(_origin(url) or (None, '', None)))
 
@@ -392,6 +406,8 @@ def ssl_context(candidates=(), store=True):
 
     It verifies the server, name included, against the public authorities,
     `candidates` and, unless `store` is false, the certificates trusted for it.
+
+    :param candidates: more certificates to verify against
     """
     context = ssl.create_default_context(cafile=PUBLIC_AUTHORITIES)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -404,12 +420,10 @@ def ssl_context(candidates=(), store=True):
 class _VerifyingPoolManager(urllib3.PoolManager):
     """Verifies every https server it calls, whatever its caller asked for.
 
-    The authorities are chosen when a connection is opened, for each host a
-    request or a redirection leads to: a trust store that cannot be used fails
-    that request, and nothing is sent unverified. A server that does not answer
-    does not hold its caller for ever: connecting and each wait for an answer
-    end after TIMEOUT and READ_TIMEOUT seconds, unless the caller names a
-    timeout, for the manager or for a request.
+    A trust store that cannot be used fails the request, and nothing is sent
+    unverified. A server that does not answer does not hold its caller for ever:
+    connecting and each wait for an answer end after TIMEOUT and READ_TIMEOUT
+    seconds, unless the caller names a timeout, for the manager or for a request.
     """
 
     def __init__(self, *arguments, **options):
@@ -424,23 +438,26 @@ class _VerifyingPoolManager(urllib3.PoolManager):
 
 
 def pool_manager(*arguments, **options):
-    """A urllib3 pool manager for calls to the server of this box; its arguments are those of `urllib3.PoolManager`.
+    """A urllib3 pool manager for calls to the server of this box, taking the arguments of `urllib3.PoolManager`.
 
     Each https connection is verified: the server of the box against the public
     authorities and the certificates trusted for it, any other host against the
-    public authorities alone. A request fails with OSError when the trusted
-    certificates cannot be used.
+    public authorities alone.
+
+    :raises OSError: from a request, when the trusted certificates cannot be used
     """
     return _VerifyingPoolManager(*arguments, **options)
 
 
 def verification_problem(host, port, candidates=(), store=True):
-    """Why the certificate of a server is refused, '' when it is accepted. Nothing is sent to the server.
+    """Why the certificate of a server is refused. Nothing is sent to the server.
 
-    One of not_yet_valid, expired, unknown_authority, name_mismatch, invalid.
-    A server that cannot be reached raises OSError. `candidates` are those of
-    `ssl_context`; the trusted certificates count for the server of this box
-    only, and not at all when `store` is false.
+    The trusted certificates count for the server of this box only, and not at all when `store` is false.
+
+    :param candidates: as for `ssl_context`
+    :return: ``''`` when it is accepted, else one of not_yet_valid, expired, unknown_authority, name_mismatch,
+        invalid
+    :raises OSError: when the server cannot be reached
     """
     try:
         with socket.create_connection((host, port), timeout=TIMEOUT) as plain:
@@ -468,7 +485,10 @@ def presented_certificate(host, port):
 
 
 def unverified_server_time(host, port):
-    """The clock of an https server (UTC), or None. Anyone on the way can forge it: show it, never rely on it."""
+    """The clock of an https server (UTC). Anyone on the way can forge it: show it, never rely on it.
+
+    :return: the time; ``None`` when the server cannot be reached or gives none
+    """
     connection = http.client.HTTPSConnection(host, port, timeout=TIMEOUT, context=_unverified_context())
     try:
         connection.request('HEAD', '/')
@@ -488,10 +508,11 @@ def on_certificate_change(callback):
 
 
 def _web_server_at_rest():
-    """Whether the master process of the web server sleeps with no reload signal pending; True when none runs.
+    """Whether the master process of the web server sleeps with no reload signal pending.
 
-    The master reads its files between the moment it takes the signal and its next sleep. Only /proc is read,
-    which every user may: no command runs.
+    The master reads its files between the moment it takes the signal and its next sleep.
+
+    :return: the answer; ``True`` when no web server runs
     """
     try:
         pid = int(Path(WEB_SERVER_PID_FILE).read_text())
@@ -505,12 +526,13 @@ def _web_server_at_rest():
 
 
 def wait_until_web_server_reloaded(timeout=WEB_SERVER_RELOAD_WAIT):
-    """Return once the web server has read its files for every reload it was asked for: True then, and when no
-    web server runs; False when `timeout` seconds went by first. Never raises.
+    """Wait until the web server has read its files for every reload it was asked for.
 
     A reload command returns as soon as its signal is sent, and the web server reads the files later: a change
-    of them in between could have it read the key of one pair beside the certificate of another. The web server
-    is taken to have read them once its master process is found at rest CALM_LOOKS times in a row.
+    of them in between could have it read the key of one pair beside the certificate of another.
+
+    :param timeout: seconds to wait at most
+    :return: ``True`` once it has read them, and when no web server runs; ``False`` when `timeout` went by first
     """
     deadline = time.monotonic() + timeout
     calm = 0
@@ -524,7 +546,10 @@ def wait_until_web_server_reloaded(timeout=WEB_SERVER_RELOAD_WAIT):
 
 
 def _uptime():
-    """Seconds since the machine started, None when they cannot be read."""
+    """Seconds since the machine started.
+
+    :return: the seconds; ``None`` when they cannot be read
+    """
     try:
         return float(Path('/proc/uptime').read_text().split()[0])
     except (OSError, ValueError, IndexError):
@@ -532,9 +557,11 @@ def _uptime():
 
 
 def _web_server_master():
-    """The process number of the master process of the web server, None when none runs.
+    """The process number of the master process of the web server.
 
     A number its file names that a stopped web server left behind, and another process took since, is not one.
+
+    :return: the number; ``None`` when none runs
     """
     try:
         pid = int(Path(WEB_SERVER_PID_FILE).read_text())
@@ -549,7 +576,7 @@ class WebServerRefused(subprocess.SubprocessError):
     """The web server refused to read its files again; a web server that runs keeps serving those it read before.
 
     Its text is the exit status of the reload and the first line the web server wrote of it, which names files and
-    never what they hold; a line of sudo about itself is passed over when the web server wrote one too.
+    never what they hold.
     """
 
     def __init__(self, reload):
@@ -560,10 +587,7 @@ class WebServerRefused(subprocess.SubprocessError):
 
 
 def _web_server_started_after(uptime):
-    """Whether the master process of the web server started after `uptime`, as `_uptime` gives it.
-
-    A master process writes its process number once it has read its files.
-    """
+    """Whether the master process of the web server started after `uptime`, as `_uptime` gives it."""
     try:
         pid = int(Path(WEB_SERVER_PID_FILE).read_text())
         started = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]
@@ -576,12 +600,9 @@ def _web_server_started_after(uptime):
 def _reload_web_server():
     for attempt in range(WEB_SERVER_RESTARTS):
         master = _web_server_master()
-        # A reload keeps the web server serving throughout and lets it end the requests in flight, the one that
-        # brought this certificate among them. A restart lets them end too, for a few seconds at the most, but
-        # between its stop and its start nothing listens and no connection is accepted: it is kept for a web
-        # server that does not run. A running web server refuses the reload when it cannot use the files: it keeps
-        # serving those it read before, and the refusal is raised, as a restart would stop it and then fail to start
-        # on the same files.
+        # A reload keeps serving throughout; a restart leaves nothing listening between its stop and its start, so it
+        # is kept for a web server that does not run. A running web server that refuses the reload keeps serving the
+        # files it read before: the refusal is raised, as a restart would stop it and fail to start on the same files.
         reload = subprocess.run(WEB_SERVER_RELOAD, capture_output=True, check=False, timeout=30)
         if not reload.returncode:
             break
@@ -604,14 +625,18 @@ def _reload_web_server():
     if not wait_until_web_server_reloaded():
         _logger.warning('The web server of the box took more than %s seconds to read its certificate files again',
                         WEB_SERVER_RELOAD_WAIT)
-    # Whatever asked for it, the web server has now read the files as they are, or is reading them past that wait.
+    # Whatever asked for it, the web server has read the files as they are, or is reading them past that wait.
     _look['unserved'] = False
 
 
 def serve_new_certificate():
     """Have the web server of the box read its certificate files again, then call the listeners of
-    `on_certificate_change`. Raises OSError or subprocess.SubprocessError when the web server cannot be made to:
-    WebServerRefused when it runs and refuses them, and then keeps serving those it read before."""
+    `on_certificate_change`.
+
+    :raises OSError: when the web server cannot be made to read them
+    :raises subprocess.SubprocessError: likewise; `WebServerRefused` when it runs and refuses them, and then keeps
+        serving those it read before
+    """
     _reload_web_server()
     for callback in _certificate_listeners:
         try:
@@ -657,13 +682,14 @@ def _directories(paths):
 
 
 def write_system_files(paths, content, mode):
-    """Write `content` (bytes) as root to each of `paths`, with the permissions `mode` ('600', '644').
+    """Write `content` as root to each of `paths`, for the files the box service has no right on.
 
-    For the files the box service has no right on. /etc lives in memory on a
-    box, so a file that must outlast a restart is named twice: under /etc and
-    under the path that leads to the card. Whatever interrupts the writing, a
-    power cut included, each file holds what it held before or all of `content`.
-    Raises OSError or subprocess.SubprocessError when a file could not be written.
+    Whatever interrupts the writing, a power cut included, each file holds what it held before or all of `content`.
+
+    :param content: bytes
+    :param mode: the permissions, ``'600'`` or ``'644'``
+    :raises OSError: when a file could not be written
+    :raises subprocess.SubprocessError: likewise
     """
     paths = _distinct(paths)
     with core('tools.helpers').writable():
@@ -696,10 +722,13 @@ ABSENT = 3
 
 
 def _root_output(test, path, *command):
-    """The standard output of `command` run as root when `path` passes the file test `test` ('-e', '-L', '-d');
-    None when it does not; raises Unreadable when the command fails or cannot be run.
+    """The standard output of `command` run as root when `path` passes the file test `test`.
 
     A command that is refused, ends in an error or takes too long is never taken for an absent file.
+
+    :param test: ``'-e'``, ``'-L'`` or ``'-d'``
+    :return: the output; ``None`` when `path` does not pass the test
+    :raises Unreadable: when the command fails or cannot be run
     """
     try:
         completed = subprocess.run(['sudo', '-n', 'sh', '-c', _IF_THERE, 'sh', test, path, *command],
@@ -714,14 +743,19 @@ def _root_output(test, path, *command):
 
 
 def read_as_root(path):
-    """The bytes of a file read as root; None when the file does not exist; Unreadable when it could not be read."""
+    """The bytes of a file read as root.
+
+    :return: the bytes; ``None`` when the file does not exist
+    :raises Unreadable: when it could not be read
+    """
     return _root_output('-e', path, 'cat', '--', path)
 
 
 def _generation_of(directory):
-    """The generation `current` of `directory` names, None when it names none or the directory has no `current`.
+    """The generation `current` of `directory` names.
 
-    Raises Unreadable when the link could not be read.
+    :return: the generation; ``None`` when it names none or the directory has no `current`
+    :raises Unreadable: when the link could not be read
     """
     link = f'{directory}/{CURRENT}'
     target = _root_output('-L', link, 'readlink', '--', link)
@@ -730,7 +764,10 @@ def _generation_of(directory):
 
 
 def _point(directory, generation):
-    """Make `current` of `directory` name `generation` by one rename; None removes `current`."""
+    """Make `current` of `directory` name `generation` by one rename.
+
+    :param generation: the generation; ``None`` removes `current`
+    """
     new_link = f'{directory}/{CURRENT}{STAGED}'
     if generation is None:
         _as_root('rm', '-f', '--', f'{directory}/{CURRENT}', new_link)
@@ -751,19 +788,16 @@ def _one_private_key(key_pem):
 
 @_exclusive
 def replace_pair(directories, certificate_pem, key_pem):
-    """Make `certificate_pem` and `key_pem` the pair `current` names in each of `directories`; return the
-    generation `current` named before in the first of them, None when it named none.
+    """Make `certificate_pem` and `key_pem` the pair `current` names in each of `directories`.
 
-    The pair is written whole in a new generation directory of each place and
-    takes its place by one rename of the `current` link, on the card first, so
-    whatever interrupts it - a power cut included - `current` names the previous
-    pair or the new one, never a key with the certificate of another. When a
-    step fails, every place is put back and the new generation removed.
-    The certificate is written as `fullchain.pem`, readable by all; the key as
-    `privkey.pem`, readable by root alone, in a directory of root alone.
-    Raises ValueError, writing nothing, when the certificate text holds a private
-    key or the key text is not exactly one private key; OSError or
-    subprocess.SubprocessError when a step could not be done.
+    Whatever interrupts it - a power cut included - `current` names the previous pair or the new one, never a key
+    with the certificate of another. When a step fails, every place is put back. The key is readable by root alone.
+
+    :return: the generation `current` named before in the first of `directories`; ``None`` when it named none
+    :raises ValueError: when the certificate text holds a private key or the key text is not exactly one private
+        key; nothing is written
+    :raises OSError: when a step could not be done
+    :raises subprocess.SubprocessError: likewise
     """
     certificate_pem = certificate_pem.encode() if isinstance(certificate_pem, str) else bytes(certificate_pem)
     key_pem = key_pem.encode() if isinstance(key_pem, str) else bytes(key_pem)
@@ -813,11 +847,10 @@ def restore_pair(directories, generation):
 
 
 def prune_pairs(directories):
-    """Remove from each of `directories` every generation `current` does not name, and any `current.viin-new`:
-    what a change that stopped left behind.
+    """Remove from each of `directories` what a change that stopped left behind.
 
-    A place whose `current` could not be read, or exists without naming a generation, is left as it is: what it
-    holds may be the pair in use.
+    That is every generation `current` does not name, and any `current.viin-new`. A place whose `current` could not
+    be read, or exists without naming a generation, is left as it is: what it holds may be the pair in use.
     """
     leftovers = []
     for place in _distinct(directories):
@@ -850,15 +883,19 @@ def remove_pair(directories):
 
 
 def _places():
-    """[(certificate file, key file)] for each place that holds the pair the web server presents, the card last."""
+    """The places that hold the pair the web server presents, the card last.
+
+    :return: ``[(certificate file, key file)]``
+    """
     return list(zip(_distinct(CERTIFICATE_FILES), _distinct(KEY_FILES)))
 
 
 def _settle_staged_pair(certificate_path, key_path):
-    """End a replacement of the pair that stopped half way: True when the place then holds the new pair.
+    """End a replacement of the pair that stopped half way.
 
-    The certificate is the last file a replacement renames: one that waits beside
-    a key it belongs to completes the new pair, and any other is dropped.
+    A certificate that waits beside a key it belongs to completes the new pair, and any other is dropped.
+
+    :return: whether the place then holds the new pair
     """
     try:
         staged = load_certificates(Path(certificate_path + STAGED).read_bytes())[0]
@@ -891,9 +928,8 @@ def _finish_installation():
 def _install(certificate_pem, key_pem):
     """Replace the pair the web server reads, as root: the box service has no right on the key directory.
 
-    Both files are written whole beside the pair before either takes its place,
-    on the card first. Whatever interrupts it, `_finish_installation` leaves the
-    previous pair or the new one, never a key with the certificate of another.
+    Whatever interrupts it, `_finish_installation` leaves the previous pair or the new one, never a key with the
+    certificate of another.
     """
     places = _places()
     with core('tools.helpers').writable():
@@ -914,7 +950,10 @@ def _install(certificate_pem, key_pem):
 
 
 def _installed_pair():
-    """(certificate file, key file) as the web server reads them now, each as bytes; None when one is missing."""
+    """The certificate file and the key file as the web server reads them.
+
+    :return: ``(certificate, key)`` as bytes; ``None`` when one is missing
+    """
     try:
         return _read_system_file(CERTIFICATE_FILES[0]), _read_system_file(KEY_FILES[0])
     except (OSError, subprocess.SubprocessError):
@@ -923,7 +962,7 @@ def _installed_pair():
 
 @contextlib.contextmanager
 def _serving_again_on_failure():
-    """Around a replacement of the pair a person asked for: when it fails, the box serves again what it served."""
+    """Around a replacement of the pair a person asked for: when it fails, the box serves what it served before."""
     previous = _installed_pair()
     try:
         yield
@@ -1044,7 +1083,7 @@ def _renewal_path(helpers):
 
 
 def _note_renewal(helpers, certificate):
-    """Keep, on the card, that `certificate` replaced a certificate this box had made; never raises."""
+    """Keep, on the card, that `certificate` replaced a certificate this box had made; a failure is logged."""
     try:
         with helpers.writable():
             _write_whole(_renewal_path(helpers), fingerprint(certificate).encode())
@@ -1053,8 +1092,10 @@ def _note_renewal(helpers, certificate):
 
 
 def replaced_own_certificate(certificate_fingerprint):
-    """Whether the certificate of `certificate_fingerprint` is one the box made in place of an earlier certificate
-    it had made itself: a browser that accepted that one meets a certificate it does not know."""
+    """Whether `certificate_fingerprint` is that of a certificate the box made in place of an earlier one it made.
+
+    A browser that accepted the earlier one meets a certificate it does not know.
+    """
     try:
         noted = _renewal_path(core('tools.helpers')).read_text(encoding='ascii').strip()
     except (OSError, ValueError):
@@ -1098,14 +1139,15 @@ def _noting_failure():
 
 
 def look_failed():
-    """Whether the last look at the certificate of the box could not do what it found to be needed, or a
-    certificate the box made is still not presented by the web server."""
+    """Whether the last look at the certificate of the box failed, or a certificate it made is still not presented."""
     return _look['failed'] or _look['unserved']
 
 
 def certificate_unserved():
-    """Whether the box made itself a certificate that the web server has not presented since: the web server
-    refused to read it again. Browsers meet the earlier certificate until it does, or until the box restarts."""
+    """Whether the web server has not presented the certificate the box made itself, having refused to read it.
+
+    Browsers meet the earlier certificate until it does, or until the box restarts.
+    """
     return _look['unserved']
 
 
@@ -1122,8 +1164,9 @@ def ensure_box_certificate():
 
     The pair stays while it covers the host name, `<host name>.local` and every
     IPv4 address of the box; otherwise the box makes another that does. A
-    certificate the customer installed is theirs to renew and is kept. Returns
-    True when the files changed; the web server reads them at its next start.
+    certificate the customer installed is theirs to renew and is kept.
+
+    :return: whether the files changed; the web server reads them at its next start
     """
     helpers = core('tools.helpers')
     with _noting_failure():
@@ -1155,7 +1198,10 @@ def refresh_box_certificate():
 
 
 def _failure_line(failure):
-    """(type name, text) of a failure as one line of at most REPEAT_TEXT_LIMIT characters of its text."""
+    """A failure as one line.
+
+    :return: ``(type name, text)``, the text of at most REPEAT_TEXT_LIMIT characters
+    """
     text = ' '.join(failure[1].split())
     if len(text) > REPEAT_TEXT_LIMIT:
         text = text[:REPEAT_TEXT_LIMIT] + ' [cut]'
@@ -1163,8 +1209,11 @@ def _failure_line(failure):
 
 
 def _log_failed_look(message, error):
-    """Log `error`, which ended a look of the keeper or of the watcher: with its traceback when it is not the failure
-    logged last, as one line with its type and text when the same failure comes back look after look."""
+    """Log `error`, which ended a look of the keeper or of the watcher.
+
+    The traceback is logged unless it is the failure logged last: the same failure coming back look after look is
+    one line with its type and text.
+    """
     failure = (type(error).__name__, str(error))
     if _failure_logged['last'] == failure:
         _logger.warning('%s: the same failure again (%s)', message, _failure_line(failure))
@@ -1178,12 +1227,11 @@ def _look_succeeded():
 
 
 class AddressWatcher(threading.Thread):
-    """Looks at the IPv4 addresses of the box every ADDRESS_LOOK_PERIOD seconds, and has the box look at its
-    certificate once an address appears that the certificate may not cover, or while a certificate it made is not
-    served yet.
+    """Looks at the IPv4 addresses of the box every ADDRESS_LOOK_PERIOD seconds.
 
-    A look that fails is logged, in full unless the look before it failed the same way; the next one comes
-    FAILED_LOOK_WAIT seconds later at the soonest.
+    It has the box look at its certificate once an address appears that the certificate may not cover, or while a
+    certificate it made is not served yet. A look that fails is logged, in full unless the look before it failed
+    the same way; the next one comes FAILED_LOOK_WAIT seconds later at the soonest.
     """
 
     def __init__(self):
@@ -1209,15 +1257,15 @@ class AddressWatcher(threading.Thread):
 
 
 class CertificateKeeper(threading.Thread):
-    """Looks at the certificate of the box when it starts, then every RENEWAL_CHECK_PERIOD seconds; an
-    `AddressWatcher` looks at it in between whenever an address of the box appears, and every FAILED_LOOK_WAIT
-    seconds while a certificate the box made is not served.
+    """Looks at the certificate of the box when it starts, then every RENEWAL_CHECK_PERIOD seconds.
 
-    With `after_core_starts_web_server`, the first look waits until core has started the web server, for
-    WEB_SERVER_START_WAIT seconds at the most: a web server that reads the files while a look replaces them may read
-    the key of one pair beside the certificate of another and refuse to start, and core's start ends at that error.
+    An `AddressWatcher` looks at it in between. A look that fails is logged as the watcher logs its own, and costs
+    nothing but that look.
 
-    A look that fails is logged as the watcher logs its own, and costs nothing but that look.
+    :param after_core_starts_web_server: wait with the first look until core has started the web server, for
+        WEB_SERVER_START_WAIT seconds at most: a web server that reads the files while a look replaces them may
+        read the key of one pair beside the certificate of another and refuse to start, and core's start ends at
+        that error
     """
 
     def __init__(self, after_core_starts_web_server=False):
@@ -1253,12 +1301,12 @@ def _kind(certificate):
 
 
 def box_certificate():
-    """What the web server of the box presents: {'kind', ...}, with the keys of `describe` unless it is missing.
+    """What the web server of the box presents.
 
-    `kind` is `box` (made by the box), `customer` (installed by the customer),
-    `shipped` (the one of the image) or `missing`. A certificate of kind `box`
-    also carries `made_at`, the moment the box made it (UTC, as `expiry` is
-    written).
+    :return: ``kind`` - ``box`` (made by the box), ``customer`` (installed by the customer), ``shipped`` (the one of
+        the image) or ``missing`` - with the keys of `describe` unless it is missing; a certificate of kind ``box``
+        also carries ``made_at``, the moment the box made it (UTC, as ``expiry`` is written)
+    :rtype: dict
     """
     certificate = _installed_certificate()
     if certificate is None:
@@ -1317,14 +1365,13 @@ def _why_refuse(certificates, key, host):
 def install_certificate(certificate_pem, key_pem, host_name):
     """Install the customer's certificate for the web server of the box.
 
-    `certificate_pem` holds the certificate and, after it, the certificates of
-    its chain; `key_pem` its private key, not encrypted; `host_name` the name
-    the certificate was issued for, which browsers will be given for this box.
-    Returns {'status': 'installed', 'host_name', ...the keys of `describe`}, or
-    {'status': 'refused', 'reason'}: the box then serves the certificate, and
-    gives browsers the address, it did before. Reasons: invalid_certificate,
-    common_name_missing, invalid_key, key_encrypted, key_mismatch,
-    not_yet_valid, expired, invalid_host_name, host_name_mismatch, box_error.
+    :param certificate_pem: the certificate and, after it, the certificates of its chain
+    :param key_pem: its private key, not encrypted
+    :param host_name: the name the certificate was issued for, which browsers will be given for this box
+    :return: ``{'status': 'installed', 'host_name', ...}`` with the keys of `describe`, or
+        ``{'status': 'refused', 'reason'}`` with the reason invalid_certificate, common_name_missing, invalid_key,
+        key_encrypted, key_mismatch, not_yet_valid, expired, invalid_host_name, host_name_mismatch or box_error;
+        the box then serves the certificate and gives browsers the address it served before
     """
     helpers = core('tools.helpers')
     host = str(host_name or '').strip().lower().rstrip('.')
@@ -1362,9 +1409,11 @@ def restore_box_certificate():
 
     The address the customer gave for the box stays: the new certificate is
     issued for it too. It goes when the box leaves its server, as no
-    certificate of the customer covers it any more. When it fails the box
-    serves what it served before, and OSError or subprocess.SubprocessError
-    is raised.
+    certificate of the customer covers it. When it fails the box serves what it
+    served before.
+
+    :raises OSError: when the certificate could not be put back
+    :raises subprocess.SubprocessError: likewise
     """
     with _serving_again_on_failure():
         _make_box_certificate(core('tools.helpers'))

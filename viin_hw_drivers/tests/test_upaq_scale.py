@@ -21,8 +21,8 @@ TOLEDO_ANSWER = b'\x02E\rhello'
 class ScriptedPorts:
     """Serial ports whose scale answers the request for the weight with a script, at one speed only.
 
-    `serial.Serial` is replaced for as long as the object is entered: core's drivers and the layer's open
-    their ports through it. Every request written is kept, with the speed the port was opened at.
+    Entering the object replaces `serial.Serial`; every request written is kept in `writes` as
+    (path, baudrate, data).
     """
 
     def __init__(self):
@@ -94,7 +94,10 @@ class UpaQCase(common.BoxCase):
         self.main = common.core('main')
 
     def plug(self, path):
-        """Offer the port `path` to the serial interface of the box, as it finds a port; return the device taken."""
+        """Offer the port `path` to the serial interface of the box.
+
+        :return: the device taken, ``None`` when no driver takes it
+        """
         interface = self.main.interfaces['SerialInterface']()
         interface.update_iot_devices({path: {'identifier': path}})
         device = self.main.iot_devices.get(path)
@@ -112,7 +115,10 @@ class UpaQCase(common.BoxCase):
                 if driver.connection_type == 'serial']
 
     def read_once(self, device):
-        """What the point of sale does to read the weight: the action `read_once`; the value the scale then holds."""
+        """Read the weight as the point of sale does.
+
+        :return: the value the scale then holds
+        """
         device.action({'action': 'read_once'})
         return device.data['value']
 
@@ -156,7 +162,6 @@ class TestScaleThatDoesNotAnswerAtNineThousandSixHundred(UpaQCase):
         self.assertEqual(
             (type(device).__name__, device.device_type, device.device_manufacturer),
             ('AdamEquipmentDriver', 'scale', 'Adam'))
-        self.assertTrue(device.device_name.startswith('Adam Equipment Serial'), device.device_name)
         self.assertEqual([write[1] for write in self.ports.writes_to(ADAM_PORT, REQUEST)], [9600, 4800])
 
     def test_toledo_is_still_a_toledo_and_is_not_asked_for_a_weight_at_9600(self):

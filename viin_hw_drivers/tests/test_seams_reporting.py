@@ -1,4 +1,4 @@
-"""What the server learns of the box, and the live channel of the box: rows 5, 6 and 8 of the seams of the layer."""
+"""What the server learns of the box, and the live channel of the box."""
 import time
 
 import common
@@ -7,24 +7,25 @@ import services_common as box
 CREDENTIAL = 'suite-credential-reports'
 DEVICE = 'box_suite_device'
 OWN_NAME = 'box.shop.example'
-# The seams the box applies once it has started, but those that a test of this file moves.
+# The seams the box applies once it has started; a test of this file moves one of them.
 SEAMS = (1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 15, 17, 18)
 
 
 def report_changes_made_while_the_server_is_down(port):
     """Start a box whose server is down, change its devices and its address, then bring the server up.
 
-    Gives 'first_report' (what the server got first once it was up: the devices and the address)
-    and 'tried_meanwhile', whether the box tried to tell the server while it was down.
+    :return: ``first_report``, the devices and the address the server got first once it was up, and
+        ``tried_meanwhile``, whether the box tried to tell the server while it was down
+    :rtype: dict
     """
     common.start()
     reporting = common.layer('reporting')
-    # A box tries again within a minute; the suite does not wait that long.
+    # The suite shortens the longest wait between two tries of the box.
     reporting.RETRY_LONGEST = 2
     changed_at = time.time()
     box.plug(DEVICE)
     common.store_box_configuration(viin_box_address=OWN_NAME)
-    # Core looks at its devices and its address every three seconds: two looks see both changes.
+    # Wait for two looks of core at its devices and its address, so that both changes are seen.
     time.sleep(7)
     common.wait_until(lambda: (reporting.outcome()['at'] or 0) > changed_at, 'the box to report the change')
     tried = reporting.outcome()['state'] == reporting.UNREACHABLE
@@ -36,7 +37,12 @@ def report_changes_made_while_the_server_is_down(port):
 
 
 def bring_the_server_up_after_the_box_started(port):
-    """Start a box whose server is down, then bring the server up; give what the box did without a restart."""
+    """Start a box whose server is down, then bring the server up.
+
+    :return: ``channel_before``, the state of the live channel before the server was up; ``subscribed``, whether the
+        box subscribed to its live channel; ``restarts``, how often the box asked for a restart of the box service
+    :rtype: dict
+    """
     common.start()
     reporting = common.layer('reporting')
     reporting.RETRY_LONGEST = 2
@@ -50,10 +56,11 @@ def bring_the_server_up_after_the_box_started(port):
 
 
 def reconnect_the_live_channel(port):
-    """Start a box beside its server, have the server drop the live channel, and give what came after.
+    """Start a box beside its server and have the server drop the live channel.
 
-    Gives 'after_drop': what the server received after it dropped the channel, in order, each as
-    ('report', devices reported) or ('subscribe', ''), until the box subscribed again.
+    :return: ``after_drop``, what the server received after it dropped the channel until the box subscribed again,
+        in order, each as ``('report', devices reported)`` or ``('subscribe', '')``
+    :rtype: dict
     """
     server = box.LiveChannelServer(port=port)
     common.start()
@@ -70,9 +77,10 @@ def reconnect_the_live_channel(port):
 def serve_the_server_as_a_stock_box_does(port):
     """Start a box with a network card beside its server, then have the server print on its receipt printer.
 
-    Gives the 'subscription' the box sent, the 'identifier' its reports carry, the 'printers' it
-    reported with their kind, the 'completions' the server got and whether the receipt was
-    'printed'.
+    :return: ``subscription``, what the box sent to subscribe; ``identifier``, the one its reports carry;
+        ``printers``, the kind of each printer it reported; ``completions``, those the server got; ``printed``,
+        whether the receipt was printed
+    :rtype: dict
     """
     common.give_a_hardware_address()
     server = box.LiveChannelServer(port=port)

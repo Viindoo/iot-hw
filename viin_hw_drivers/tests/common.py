@@ -134,7 +134,13 @@ def utc_now():
 
 
 def wait_until(condition, what, timeout=30):
-    """Return what `condition()` gives as soon as it is true; fail the test after `timeout` seconds."""
+    """Wait until `condition()` is true.
+
+    :param what: what the wait is for, named in the failure
+    :param timeout: seconds
+    :return: what `condition()` gave
+    :raises AssertionError: when it is still false after `timeout`
+    """
     deadline = time.monotonic() + timeout
     while True:
         value = condition()
@@ -157,20 +163,17 @@ def as_root(*command, data=None):
 def keep_from_loading(*files):
     """Make files of the layer fail to load in the box this process starts; call it before `start`.
 
-    A file is named by its place in the package of the layer, a dot for each directory and no `.py`.
-    The box then runs without what the file provides, as a box built without it does; naming a file
-    the layer does not have changes nothing.
+    :param files: places in the package of the layer, a dot for each directory and no `.py`; a file
+        the layer does not have changes nothing
     """
     for file in files:
         sys.modules[f'{LAYER}.{file}'] = None
 
 
 def keep_all_but(*files):
-    """Make every file the layer loads at its start, but `files`, fail to load in the box this process starts.
+    """Make every file the layer loads at its start, but `files`, fail to load; call it before `start`.
 
-    Call it before `start`; the files are named as `keep_from_loading` names them. The box then
-    runs as one built with `files` alone, whatever other files the layer holds. The file that
-    starts the layer is always loaded.
+    :param files: named as `keep_from_loading` names them; the file that starts the layer always loads
     """
     found = [*LAYER_MODULE.glob('*.py'), *LAYER_MODULE.glob('seams/*.py'), *LAYER_MODULE.glob('controllers/*.py')]
     names = {'.'.join(path.relative_to(LAYER_MODULE).with_suffix('').parts) for path in found
@@ -182,6 +185,8 @@ def start(configuration=CONFIGURATION):
     """Start the box in this process as its service does; return once core has finished its own start.
 
     A process holds one box: only the first call does anything.
+
+    :param configuration: the configuration file the box starts with
     """
     require_software_box()
     if _started:
@@ -202,9 +207,7 @@ def start(configuration=CONFIGURATION):
 def _hold_the_name_client():
     """Stop the client of the Viindoo name, which asks the server of the box on a clock of its own.
 
-    Two minutes after a start it would question whatever server a test set up by then: a test
-    that counts what its server received would count a question it did not cause. A test of the
-    name drives the client itself.
+    A test that counts what its server received would otherwise count a question it did not cause.
     """
     public_name = sys.modules.get(f'{LAYER}.public_name')
     if public_name:
@@ -227,11 +230,10 @@ def _replace_effects(helpers):
 
 
 def _wait_for_core():
-    """Core starts on a thread of its own: web server, device handlers, then the nightly actions it schedules.
-
-    Only the actions of core tell that it got there: a file of the layer may schedule one of its own earlier.
-    """
+    """Wait until core has finished its start, which runs on a thread of its own."""
     import schedule
+
+    # Only a job of core tells that it got there: a file of the layer may schedule one of its own earlier.
 
     wait_until(
         lambda: [job for job in schedule.jobs
@@ -251,10 +253,11 @@ def serve():
 
 
 def through_web_server(path, proof=None, sent=None, **parameters):
-    """Call a JSON route through the web server of the box: its result, None when no answer came back.
+    """Call a JSON route through the web server of the box.
 
-    `sent` is what the browser of the caller adds to the request of its own, as header names and values.
-    `why_no_answer` then tells why the answer is None.
+    :param proof: an unlock proof
+    :param sent: what the browser of the caller adds to the request of its own, as header names and values
+    :return: the result of the route; ``None`` when no answer came back, and `why_no_answer` tells why
     """
     headers = {'Content-Type': 'application/json', **(sent or {})}
     if proof:
@@ -279,8 +282,7 @@ def through_web_server(path, proof=None, sent=None, **parameters):
 
 
 def why_no_answer():
-    """Why the last call of `through_web_server` gave None: the error of the call, or what the box answered instead
-    of a result; empty when it gave a result."""
+    """Why the last call of `through_web_server` gave ``None``; empty when it gave a result."""
     return _no_answer['reason']
 
 
@@ -330,8 +332,8 @@ def box_log(level=logging.DEBUG):
 def _answering_commands(answer):
     """Ask `answer` before each command the box runs with `subprocess.run` or `subprocess.check_call`.
 
-    `answer(command)` gets the command as a list of texts. None lets the command run; a number
-    is the exit code it ends with instead, without running.
+    :param answer: gets the command as a list of texts; ``None`` lets the command run, a number is the
+        exit code the command ends with instead, without running
     """
     originals = {name: getattr(subprocess, name) for name in ('run', 'check_call')}
 
@@ -410,11 +412,9 @@ def failing(program):
 
 @contextlib.contextmanager
 def web_server_restarted_as_on_a_box():
-    """Have each restart of the web server asked for during the block stop it, then start it, as the service manager
-    of a box does: only the start reads its files, and a web server that cannot use them stays stopped.
+    """Have each restart of the web server asked for during the block stop it, then start it, as a box does.
 
-    The software box restarts it with the script of the web server instead, which reads the files first and leaves
-    a web server it could not start again running.
+    A web server that cannot use its files then stays stopped.
     """
     def answer(command):
         if command[-3:] != ['service', 'nginx', 'restart']:
@@ -448,9 +448,10 @@ def root_commands():
 def power_cut_after(commands):
     """Cut the power once the thread of the block has run `commands` commands as root.
 
-    The command that would come next is not run and ends in PowerCut; neither is any command
-    as root after it, whoever caught the cut. Gives a function that tells whether the power
-    was cut.
+    The command that would come next ends in PowerCut, and no command as root runs after it, whoever
+    caught the cut.
+
+    :return: a function that tells whether the power was cut
     """
     thread = threading.current_thread()
     ran = []
@@ -481,7 +482,7 @@ def box_configuration():
 
 
 def store_box_configuration(**values):
-    """Arrange what a box stored in an earlier life; an empty value removes its key."""
+    """Set the keys the box keeps about its server; an empty value removes its key."""
     parser = _read_configuration()
     if not parser.has_section(SECTION):
         parser.add_section(SECTION)
@@ -569,12 +570,18 @@ def certificate_from(pem, key_pem):
 
 def make_certificate(common_name, names=None, valid_from=None, valid_until=None, issuer=None, authority=False,
                      key=None):
-    """Make a certificate and its key, valid from yesterday for 30 days unless dates (naive UTC) say otherwise.
+    """Make a certificate and its key, valid from yesterday for 30 days unless the dates say otherwise.
 
-    `names` are the host names and addresses it is issued for (the common name when left out). It
-    is self-signed unless `issuer`, a `Certificate` made with `authority`, signs it. `key` is the
-    private key to make it for, a new one when left out. Without a `common_name` its subject
-    names an organisation only.
+    The certificate is self-signed unless `issuer` signs it. Without a `common_name` its subject names an
+    organisation only.
+
+    :param names: the host names and addresses it is issued for; the common name when ``None``
+    :param valid_from: naive UTC time
+    :param valid_until: naive UTC time
+    :param issuer: a `Certificate` made with `authority`
+    :param authority: whether the certificate is one of an authority
+    :param key: the private key to make it for; a new one when ``None``
+    :rtype: Certificate
     """
     key = key or ec.generate_private_key(ec.SECP256R1())
     subject = x509.Name([
@@ -656,9 +663,10 @@ def serve_web_certificate():
 def wait_for_the_web_server_to_read_its_files():
     """Return once the web server of the box has read its files for every reload it was asked for.
 
-    A reload command returns before the web server reads the files: one written in between may be read beside the
-    other file of an earlier pair, and the web server then fails every connection. Call it before writing a file the
-    web server reads. Fails the test when the web server takes more than WEB_SERVER_READ_TIMEOUT seconds.
+    Call it before writing a file the web server reads: a reload returns before the files are read, and a
+    file written in between may be read beside the other file of an earlier pair.
+
+    :raises AssertionError: when the web server takes more than WEB_SERVER_READ_TIMEOUT seconds
     """
     if not _layer_file('trust').wait_until_web_server_reloaded(timeout=WEB_SERVER_READ_TIMEOUT):
         raise AssertionError(
@@ -682,8 +690,8 @@ def _layer_file(name):
 def public_authority():
     """Give a `Certificate` of an authority that, during the block, counts among those every browser trusts.
 
-    A certificate made with it as `issuer` is then one "issued by a public authority" for the
-    box started in this process.
+    :return: the authority; a certificate it issues counts as issued by a public authority for the box
+        started in this process
     """
     authority = make_certificate('Box suite authority', names=(), authority=True)
     trust = layer('trust')
@@ -697,7 +705,7 @@ def public_authority():
 def make_public_from_the_start(authority_pem):
     """Count an authority among those every browser trusts on the box this process starts; call it before `start`.
 
-    `authority_pem` is the PEM text of its certificate.
+    :param authority_pem: the PEM text of its certificate
     """
     import certifi
 
@@ -709,8 +717,7 @@ def make_public_from_the_start(authority_pem):
 def give_a_hardware_address():
     """Give the machine a network card, as far as the box this process starts can tell; call it before `start`.
 
-    The software box has none, and core asks its server for driver files only once it knows the
-    hardware address of the box.
+    Core asks its server for driver files only once it knows the hardware address of the box.
     """
     import netifaces
 
@@ -766,14 +773,17 @@ def tls_with(certificate):
 class FakeServer:
     """A server, as far as a box can tell.
 
-    It answers a pairing request (`POST /iot/pair`) with `answer` as its result - or with `reply`,
-    a (status, body) pair, as it stands - accepts the reports and the log of a box, has no driver
+    It answers a pairing request (`POST /iot/pair`), accepts the reports and the log of a box, has no driver
     file to give it, and answers "not found" to the rest; a subclass answers more in `answer_to`.
-    `requests` lists what it received: method, path and body, the body read as JSON when it is.
-    With a `certificate` it speaks https, under the name `localhost` unless `host` gives another
-    name of this machine. `port` is the port it listens on, a free one when left out. `channel`
-    is the name of the live channel it gives a box that reports, none when left out. `clock` is
-    the time it states in its answers when its clock is not the one of the box.
+    `requests` lists what it received: method, path and body (the body read as JSON when it is).
+
+    :param answer: the result it gives to a pairing request
+    :param reply: a (status, body) pair it gives to a pairing request instead of `answer`
+    :param certificate: a `Certificate`; the server then speaks https
+    :param clock: the time it states in its answers, when its clock is not the one of the box
+    :param host: the name of this machine it goes by; ``localhost`` with a certificate, else ``127.0.0.1``
+    :param port: the port it listens on; a free one when 0
+    :param channel: the name of the live channel it gives a box that reports; none when empty
     """
 
     def __init__(self, answer=None, reply=None, certificate=None, clock=None, host=None, port=0, channel=''):
@@ -799,7 +809,7 @@ class FakeServer:
 
     @property
     def calls(self):
-        """What it received, each as 'METHOD path'."""
+        """Each request received, as 'METHOD path'."""
         return [f"{request['method']} {request['path']}" for request in self.requests]
 
     def link(self, code):
@@ -818,8 +828,11 @@ class FakeServer:
         return self._secured
 
     def answer_to(self, method, path, body):
-        """What this server answers to a request: (status, body), or (status, body, headers) with headers
-        as (name, value) pairs. `body` is what `requests` keeps of the request."""
+        """Answer a request.
+
+        :param body: what `requests` keeps of the request
+        :return: (status, body), or (status, body, headers) with headers as (name, value) pairs
+        """
         if method != 'POST':
             return 404, b''
         if path == '/iot/pair':
@@ -913,12 +926,13 @@ class ProcessFailed(AssertionError):
 def in_new_process(function, **arguments):
     """Run `function(**arguments)` in a Python process of its own and return what it returns.
 
-    `function` is a module-level function of this file or of a test file; its arguments and its
-    result travel as JSON. The process ends as soon as the function returns, whatever it started.
+    :param function: a module-level function of this file or of a test file; its arguments and its result
+        travel as JSON
+    :raises ProcessFailed: when the process does not end or ends without a result
     """
     require_software_box()
-    # A command the box ran - the compiler behind a library lookup of core, every few seconds - may outlive
-    # it by a moment and still write its own temporary files here: what it leaves is no failure of a test.
+    # A command the box ran (the compiler behind a library lookup of core) may outlive it and still write its
+    # own temporary files here: what it leaves is no failure of a test.
     with tempfile.TemporaryDirectory(prefix='box-suite-', ignore_cleanup_errors=True) as directory:
         result = Path(directory, 'result.json')
         command = [
@@ -960,18 +974,19 @@ def start_report(server_wide_modules=None, core_changes=None, changed_signatures
                  layer_files=None, without=(), script_changes=None):
     """Start a box in this process and say what its start did. Meant for `in_new_process`.
 
-    The box starts as its configuration says, unless `server_wide_modules` gives another list of
-    modules, `core_changes`, `web_changes` or `script_changes` a core that moved, `layer_files` a layer that holds
-    more files (see `configuration_file` for the four), `changed_signatures` library functions
-    that an update gave another signature (see `change_signature`) or `without` files of the
-    layer that cannot be loaded (see `keep_from_loading`). The report:
-
-    * 'integrity' - the state the layer gives of itself, None when the layer is not loaded;
-    * 'threads' - one entry per thread, in the order they really started: 'thread' (its class,
-      or its function for a plain thread) and 'seams_applied' (the numbers of the seams applied
-      at that moment, None when the layer was not loaded yet);
-    * 'asked' - every host the process asked meanwhile (see `AskedHosts`);
-    * 'answers' - the status of a GET on each address of `probes`, once the box is started.
+    :param server_wide_modules: another list of server-wide modules than the configuration's
+    :param core_changes: a core that moved (see `configuration_file`)
+    :param web_changes: see `configuration_file`
+    :param script_changes: see `configuration_file`
+    :param layer_files: a layer that holds more files (see `configuration_file`)
+    :param changed_signatures: library functions that an update gave another signature (see `change_signature`)
+    :param probes: addresses to GET once the box is started
+    :param without: files of the layer that cannot be loaded (see `keep_from_loading`)
+    :return: a dict with 'integrity' (the state the layer gives of itself, ``None`` when the layer is not
+        loaded), 'threads' (one entry per thread in the order they started: 'thread', its class or its
+        function for a plain thread, and 'seams_applied', the numbers of the seams applied at that moment,
+        ``None`` when the layer was not loaded yet), 'asked' (every host the process asked, see `AskedHosts`)
+        and 'answers' (the status of the GET on each address of `probes`)
     """
     configuration = CONFIGURATION
     if server_wide_modules or core_changes or web_changes or layer_files or script_changes:
@@ -1007,11 +1022,12 @@ CORE_CHECKOUT = '--git-dir=/home/pi/odoo/.git'
 def core_update_possible():
     """Arrange the checkout of core so that its update check, were it to run, would update the box.
 
-    The box then has CHECKED_OUT_BRANCH checked out and its remote offers every branch: a server that
-    says it runs OTHER_SERIES (a `ServerOfASeries` of services_common) makes core rename the branch and run
-    its update script. Nothing is run or changed. Gives the list of what core did to update, each as
-    [program, *arguments]: empty while core's check does not run. The commands of the layer, which
-    names its repositories with `-C`, are left alone.
+    A server that says it runs OTHER_SERIES (a `ServerOfASeries` of services_common) makes core rename the
+    branch and run its update script; nothing is run or changed. The commands of the layer, which names its
+    repositories with `-C`, are left alone.
+
+    :return: the list of what core did to update, each as [program, *arguments]; empty while core's check
+        does not run
     """
     updated = []
     check_output = subprocess.check_output
@@ -1049,14 +1065,16 @@ def configuration_file(directory, server_wide_modules=None, core_changes=None, w
                        script_changes=None):
     """Write in `directory` a configuration of the box with other server-wide modules, or with other code.
 
-    `core_changes` maps a text of core to what an update of core made of it; it is applied to
-    every Python file of a copy of the box modules of core. `web_changes` does the same to a copy
-    of the module of core the page of the box is built on. `layer_files` maps the path of a file
-    in the layer to its content: the files are added to a copy of the modules of the layer, as a
-    later version of the layer may hold them. `script_changes` maps the path of a script of core
-    on the addons path - one the box runs as root, outside its modules - to the changes, as
-    `core_changes` gives them, an update of core made to it. The configuration puts each copy
-    first on its addons path.
+    Each copy of code the configuration names comes first on its addons path.
+
+    :param core_changes: maps a text of core to what an update of core made of it, for every Python file of a
+        copy of the box modules of core
+    :param web_changes: the same, for a copy of the module of core the page of the box is built on
+    :param layer_files: maps the path of a file in the layer to its content, added to a copy of the modules of
+        the layer
+    :param script_changes: maps the path of a script of core on the addons path (one the box runs as root,
+        outside its modules) to changes given as `core_changes` gives them
+    :return: the path of the configuration file
     """
     parser = _read_configuration()
     if server_wide_modules:
@@ -1102,7 +1120,7 @@ def _changed_core(addons, addons_path, modules, changes, copy):
         if changed != text:
             file.write_text(changed, encoding='utf-8')
     if not_found:
-        raise RuntimeError(f'Core has no such text any more, the change cannot be made: {sorted(not_found)}')
+        raise RuntimeError(f'The text to change is not in core, the change cannot be made: {sorted(not_found)}')
     return addons
 
 
@@ -1112,7 +1130,7 @@ def _changed_scripts(scripts, addons_path, changes):
         text = source.read_text(encoding='utf-8')
         not_found = sorted(former for former in replacements if former not in text)
         if not_found:
-            raise RuntimeError(f'{script} has no such text any more, the change cannot be made: {not_found}')
+            raise RuntimeError(f'The text to change is not in {script}, the change cannot be made: {not_found}')
         for former, later in replacements.items():
             text = text.replace(former, later)
         target = scripts / script
@@ -1160,9 +1178,10 @@ def seam_check(server_wide_modules=None, core_changes=None, changed_signatures=(
                layer_files=None, script_changes=None):
     """Run the standalone seam check of the layer, as a person or a build does.
 
-    The arguments are those of `start_report`. Returns the exit code of the check, {seam number:
-    whether it holds}, the numbers of the seams it reports as deferred, the parts of the layer it
-    reports as not working, and all it printed.
+    The arguments are those of `start_report`.
+
+    :return: a `SeamCheck`: the exit code of the check, {seam number: whether it holds}, the numbers of the
+        seams it reports as deferred, the parts of the layer it reports as not working, and all it printed
     """
     require_software_box()
     with tempfile.TemporaryDirectory(prefix='box-suite-') as directory:
@@ -1200,9 +1219,9 @@ def _seam_check_after_changes():
 class ThreadStarts:
     """Lists, while its block runs, each thread at the moment it really starts.
 
-    `started` holds, per thread, 'thread' - its class, or the function it runs when it is a plain
-    thread - and 'seams_applied': the numbers of the seams the layer had applied by then, None
-    when the layer was not loaded yet.
+    `started` holds, per thread, 'thread' (its class, or the function it runs when it is a plain thread) and
+    'seams_applied' (the numbers of the seams the layer had applied by then, ``None`` when the layer was not
+    loaded yet).
     """
 
     def __enter__(self):
@@ -1210,7 +1229,7 @@ class ThreadStarts:
         self._start = original = threading.Thread.start
         started, label, seams_applied = self.started, self._label, self._seams_applied
 
-        # The gate of the layer takes the place of this method only if it still has the signature it knows.
+        # The gate of the layer takes the place of this method only when it has the signature the gate knows.
         def start(self):
             started.append({'thread': label(self), 'seams_applied': seams_applied()})
             original(self)
@@ -1327,10 +1346,12 @@ class BoxCase(BoxStateCase):
         self.client = Client(odoo.http.root)
 
     def request(self, path, parameters=None, proof=None, sent=None, box=None):
-        """The response to a GET, or to a JSON call when `parameters` is given; `proof` is an unlock proof.
+        """Send a GET, or a JSON call when `parameters` is given.
 
-        `sent` is what the browser of the caller adds to the request of its own, as header names and
-        values. `box` is the address by which the caller reaches the box, `http://localhost` when left out.
+        :param proof: an unlock proof
+        :param sent: what the browser of the caller adds to the request of its own, as header names and values
+        :param box: the address by which the caller reaches the box; ``http://localhost`` when ``None``
+        :return: the response
         """
         headers = dict(sent or {})
         if proof:
@@ -1355,21 +1376,20 @@ class BoxCase(BoxStateCase):
         return response.get_json()['result'], response.headers.get(layer('lock').PROOF_HEADER)
 
     def report_to(self, server):
-        """Have core send `server` its report, which carries the credential, as it does once the box has started.
-
-        Core reads the address of its server when it starts: `server` stands for the one it read.
-        """
+        """Have core send `server` its report, which carries the credential; `server` stands for the one core read."""
         manager = core('main').manager
         self.addCleanup(setattr, manager, 'server_url', manager.server_url)
         manager.server_url = server.url
         manager.send_alldevices()
 
     def box_with_server(self, credential, certificate=None, kind=None, **options):
-        """Pair the box with a new `FakeServer`, which gives it `credential`, and return that server.
+        """Pair the box with a new `FakeServer`, which gives it `credential`.
 
-        `kind` and `options` are those of `server`. With a `certificate` the server speaks https
-        and the installer confirmed that certificate. The box is left as its restart leaves it: it
-        has read its server, and no restart is pending.
+        `kind` and `options` are those of `server`. The box is left as its restart leaves it: it has read its
+        server, and no restart is pending.
+
+        :param certificate: the server then speaks https and the installer confirmed that certificate
+        :return: the server
         """
         server = self.server(
             kind, answer={'status': 'paired', 'token': credential, 'box_name': 'Suite box'}, certificate=certificate,

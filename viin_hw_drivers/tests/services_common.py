@@ -6,11 +6,13 @@
 * `FakeBoard` - the network interfaces of a board, as the system describes them;
 * `Releases` - where a box takes its software from, made of local repositories, and the two trees it runs;
 * `WebServer` - the web server of the box, run on ports of its own with the site the box installs;
+* `BoxService` and `box_service` - the box service as a process of its own;
 * `print_jobs` - what the print server of the software box printed.
 
 Child functions here are meant for `common.in_new_process`.
 """
 import base64
+import configparser
 import contextlib
 import datetime
 import hashlib
@@ -21,6 +23,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import ssl
 import struct
@@ -81,8 +84,6 @@ OTHER_SITE = 'other_site'
 SUITE_HARDWARE_ADDRESS = '02:00:5e:00:53:01'
 
 
-# ---------------------------------------------------------------------------------------------- files of the box
-
 def keep_files(case, *paths):
     """Put each file back as it was, or absent, when the test `case` ends."""
     for path in paths:
@@ -100,8 +101,6 @@ def pointer_release():
     """The release the pointer file of the layer names: what the box this suite runs reports it runs."""
     return json.loads(POINTER_FILE.read_text())['release']
 
-
-# ---------------------------------------------------------------------------------------------- pages
 
 class _References(html.parser.HTMLParser):
     """Every address a page loads or links to: its attributes, and the addresses in its styles and scripts."""
@@ -173,16 +172,16 @@ def names_the_vendor(text):
     return bool(page_text_check().vendor_words(text))
 
 
-# ---------------------------------------------------------------------------------------------- devices
-
 _device_classes = {}
 
 
 def plug(identifier, device_type='keyboard'):
-    """Plug a device into the box started in this process, as core holds its devices; return it.
+    """Plug a device into the box started in this process, as core holds its devices.
 
-    It takes the actions core's keyboard and scale devices are asked for, lists them in `asked`, and
+    The device takes the actions core's keyboard and scale devices are asked for, lists them in `asked`, and
     tells the pages that listen to it after each, as a device that read something does.
+
+    :return: the device
     """
     if 'device' not in _device_classes:
         class SuiteDevice(common.core('driver').Driver):
@@ -205,7 +204,10 @@ def plug(identifier, device_type='keyboard'):
 
 
 def wait_for_devices(*identifiers, timeout=60):
-    """Wait until the box started in this process has the devices `identifiers`; return them."""
+    """Wait until the box started in this process has the devices `identifiers`.
+
+    :return: the devices, in the order of `identifiers`
+    """
     main = common.core('main')
     common.wait_until(lambda: set(identifiers) <= set(main.iot_devices), f'the devices {identifiers}', timeout)
     return [main.iot_devices[identifier] for identifier in identifiers]
@@ -217,16 +219,19 @@ def print_jobs(queue):
 
 
 def new_print_job(queue, before, timeout=30):
-    """The content of the job `queue` printed since `before` (a `print_jobs` of that queue) - wait for it."""
+    """Wait for a job `queue` printed since `before`.
+
+    :param before: a `print_jobs` of that queue
+    :return: the content of the job
+    """
     found = common.wait_until(lambda: set(print_jobs(queue)) - set(before), f'a print job on {queue}', timeout)
     return print_jobs(queue)[sorted(found)[-1]]
 
 
 def kind_core_gives(queue):
-    """The kind of printer core's own printer handlers make of the print queue `queue`, as they find it now.
+    """Ask core's printer interface now for the print queue `queue`, without starting a driver.
 
-    The printer interface of core looks at the print server every two minutes: this asks it now,
-    and gives what core's printer driver then derives, without starting a driver.
+    :return: the kind of printer core's printer driver derives from it; ``None`` when core finds no such device
     """
     main = common.core('main')
     interface = next(handler for handler in main.interfaces.values() if handler.connection_type == 'printer')
@@ -239,7 +244,7 @@ def kind_core_gives(queue):
 
 
 def print_queues():
-    """What the print server says of its print queues: one line per queue, with the address of its printer."""
+    """The `lpstat -v` listing of the print server: one line per queue, with the address of its printer."""
     return subprocess.run(['lpstat', '-v'], capture_output=True, text=True, check=False).stdout
 
 
@@ -257,8 +262,6 @@ def settings_code(credential):
     return common.layer('lock').settings_code(credential)
 
 
-# ---------------------------------------------------------------------------------------------- live channel
-
 _WEBSOCKET_KEY = b'258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 
 
@@ -270,8 +273,10 @@ class LiveChannelServer:
     `happened` lists, in the order they came: ('report', what the box sent) for each report,
     ('subscribe', what the box sent) for each subscription, ('completion', parameters) for each
     print completion, ('drop', None) when it dropped the connections. `send(messages)` sends
-    messages to every box connected, `drop()` closes every connection as a server that restarts
-    does. `channel` is what it answers a report with.
+    messages to every box connected, `drop()` closes every connection as a server that restarts does.
+
+    :param port: the port it listens on; a free one when 0
+    :param channel: what it answers a report with
     """
 
     def __init__(self, port=0, channel='box-suite-channel'):
@@ -421,12 +426,10 @@ def print_command(mac, device, print_id, document):
     }}}]
 
 
-# ---------------------------------------------------------------------------------------------- board
-
 class FakeBoard:
     """The network interfaces of a board, as the system describes them under /sys, in a directory of its own.
 
-    `patched()` makes the box started in this process read them there for the block.
+    `patched()` makes the box started in this process read them there.
     """
 
     def __init__(self, directory, device_tree=True):
@@ -441,8 +444,11 @@ class FakeBoard:
         self._usb_ports = 0
 
     def interface(self, name, address, wireless=False, on='board'):
-        """An Ethernet-type interface: `on` the board itself, on a USB port (`usb`), or on the internal USB hub of
-        the board (`board_usb`), the way some boards attach their wired interface."""
+        """Add an Ethernet-type interface.
+
+        :param on: ``board`` for the board itself, ``usb`` for a USB port, ``board_usb`` for the internal USB hub
+            of the board, the way some boards attach their wired interface
+        """
         if on == 'board':
             device = self.root / 'devices' / 'platform' / name
             device.mkdir(parents=True)
@@ -472,8 +478,7 @@ class FakeBoard:
 def network(addresses, gateway=None):
     """Give the box started in this process the IPv4 addresses `addresses`, {interface: address}, for the block.
 
-    Core and the layer read the interfaces of the machine through netifaces; the software box has none. The
-    dictionary is read at each question, so an address added to it during the block appears on the box.
+    An address added to the dictionary during the block appears on the box.
     """
     import netifaces
 
@@ -493,7 +498,7 @@ def network(addresses, gateway=None):
 
 
 def box_made_certificate(names, made_days_ago=0, lasting_days=400):
-    """The certificate the box makes for itself, as a `Certificate`, made `made_days_ago` days ago for `names`."""
+    """The `Certificate` the box makes for itself for `names`, made `made_days_ago` days ago."""
     day = datetime.timedelta(days=1)
     return common.make_certificate(
         f'Viindoo IoT Box {common.board_serial()}', names=names,
@@ -501,13 +506,14 @@ def box_made_certificate(names, made_days_ago=0, lasting_days=400):
 
 
 def follow_a_certificate_the_web_server_refused_to_take(address):
-    """Start a box that holds `address`, whose watcher of the addresses looks only when it is let; have the box
-    replace its own certificate that nears its end at a look whose web server refuses to take the new one, then let
-    the watcher look once, at the same addresses.
+    """Have a box that holds `address` replace its own certificate at a look whose web server refuses the new one.
 
-    Meant for `common.in_new_process`. Gives 'meanwhile', what holds once the refusal is over, and 'after', once the
-    watcher looked: 'served', whether the web server presents the certificate installed, and 'line', the state, the
-    reason and the action of the browser address line of the self-test.
+    The watcher of the addresses looks only when it is let, and is let once after the refusal. Meant for
+    `common.in_new_process`.
+
+    :return: a dict with 'meanwhile' (what holds once the refusal is over) and 'after' (what holds once the
+        watcher looked), each with 'served' (whether the web server presents the certificate installed) and
+        'line' (the state, the reason and the action of the browser address line of the self-test)
     """
     let_look, watcher_waits, keeper_waits, sleep = threading.Semaphore(0), [], [], time.sleep
 
@@ -555,15 +561,16 @@ def _what_browsers_meet(address):
     return {'served': _installed_certificate_served(), 'line': [line['state'], line['reason'], line['action']]}
 
 
-# ---------------------------------------------------------------------------------------------- releases
-
 def release_channel(series):
     """The branch a published release of `series` moves, and nothing else does."""
     return f'box-release/{series}'
 
 
 def pointer(release, core_commit, series=SERIES, min_image='24.11', candidate=None):
-    """The text of a pointer file; a release named `rc.<n>` is a candidate unless `candidate` says otherwise."""
+    """The text of a pointer file.
+
+    :param candidate: whether the release is a candidate; ``None`` makes a release named `rc.<n>` one
+    """
     if candidate is None:
         candidate = bool(re.fullmatch(r'(?:.*-)?rc\.[0-9]+', release))
     return json.dumps({'release': release, 'series': series, 'odoo_commit': core_commit, 'min_image': min_image,
@@ -574,10 +581,10 @@ class Releases:
     """Where a box takes its software from, made of local repositories, and the two trees of a box that runs it.
 
     `layer_remote` and `core_remote` stand for the two places the box software comes from; `layer_tree`
-    and `core_tree` are the trees of the box, clones of them. The core repository starts with
-    the commits `core_commits[0]` and `[1]`; the layer repository with the commit `first`, on the
-    branch `start`, whose pointer names the release `1.0` and `core_commits[0]`, as the trees are.
-    Each release holds a `box/system/apply.sh` that only says it ran, in `system_files_of`.
+    and `core_tree` are the trees of the box, clones of them. The core repository holds the commits
+    `core_commits[0]` and `[1]`; the layer repository the commit `first`, on the branch `start`, whose pointer
+    names the release `1.0` and `core_commits[0]`, as the trees are. Each release holds a `box/system/apply.sh`
+    that only says it ran, in `system_files_of`.
     """
 
     def __init__(self, directory):
@@ -626,7 +633,10 @@ class Releases:
         return str(path)
 
     def core_commit(self, text, branch=SERIES):
-        """A new commit of core on `branch` of the core repository; its name."""
+        """Add a commit of core on `branch` of the core repository.
+
+        :return: its name
+        """
         work = self._core_work
         self.git(work, 'checkout', '--quiet', '-B', branch)
         (work / 'core.txt').write_text(f'{text}\n')
@@ -636,10 +646,12 @@ class Releases:
         return self.git(work, 'rev-parse', 'HEAD')
 
     def publish(self, branch, pointer_text, release='', apply_fails=False):
-        """A new commit at the head of `branch` of the layer repository; its name.
+        """Add a commit at the head of `branch` of the layer repository.
 
-        `pointer_text` is the whole pointer file, None for a commit without one. `release` names
-        the marker its apply script leaves; `apply_fails` makes that script fail instead.
+        :param pointer_text: the whole pointer file; ``None`` for a commit without one
+        :param release: names the marker its apply script leaves
+        :param apply_fails: makes the apply script fail instead
+        :return: the name of the commit
         """
         work = self._layer_work
         self.git(work, 'checkout', '--quiet', '--orphan', f'box-suite-{time.monotonic_ns()}')
@@ -664,20 +676,23 @@ class Releases:
         self.git(self.layer_remote, 'branch', '-D', branch)
 
     def name_release(self, series, commit, tag=None, annotated=False):
-        """Make `commit` the head of the release channel of `series`, tagged as release `tag` when there is one."""
+        """Make `commit` the head of the release channel of `series`, tagged as release `tag` when given."""
         self.git(self.layer_remote, 'update-ref', f'refs/heads/{release_channel(series)}', commit)
         if tag:
             self.tag(series, commit, tag, annotated)
 
     def tag(self, series, commit, release, annotated=False):
-        """Tag `commit` as the published release `release` of `series`, moving a tag of that name that exists."""
+        """Tag `commit` as the published release `release` of `series`; a tag of that name moves."""
         arguments = ['-a', '-m', f'release {release}'] if annotated else []
         self.git(self.layer_remote, 'tag', '--force', *arguments, f'box-{series}-{release}', commit)
 
     def release(self, series, pointer_text, release='', tag=None, annotated=False, **options):
-        """A new commit at the head of the release channel of `series`, published as the release `tag`.
+        """Add a commit at the head of the release channel of `series`, published as a release.
 
-        `tag` defaults to `release`, False leaves the commit without a tag; the rest is `publish`.
+        The other arguments are those of `publish`.
+
+        :param tag: the release tag; `release` when ``None``, no tag when ``False``
+        :return: the name of the commit
         """
         commit = self.publish(release_channel(series), pointer_text, release=release, **options)
         if tag is not False:
@@ -703,10 +718,10 @@ def run_guard(*arguments, env=None):
 
 
 def trial_after_update(releases, previous, target):
-    """The record an update leaves for the guard: the box moved its trees from `previous` to `target`.
+    """The record an update leaves for the guard when the box moved its trees from `previous` to `target`.
 
-    Both are (release, layer commit, core commit). It is the contract between the box software
-    and the guard.
+    :param previous: (release, layer commit, core commit)
+    :param target: (release, layer commit, core commit)
     """
     def pair(release, layer, core):
         return {'release': release, 'layer_commit': layer, 'odoo_commit': core}
@@ -719,15 +734,15 @@ def trial_after_update(releases, previous, target):
     }
 
 
-# ---------------------------------------------------------------------------------------------- web server
-
 class WebServer:
     """The web server of the box with the site the box installs, on ports of its own, run by the box user.
 
     The site is read from the system files of the layer as they are; only where it listens, where
-    it finds its files and certificates and - for `box_service_port` - where the box service
-    answers are set for the software box. `names` adds the block of one more name per entry,
-    {name: `common.Certificate`}, written from the template the box writes them from.
+    it finds its files and certificates and where the box service answers are set for the software box.
+
+    :param names: {name: `common.Certificate`}; adds the block of one more name per entry, written from the
+        template the box writes them from
+    :param box_service_port: the port of the box service the site forwards to
     """
 
     def __init__(self, directory, box_certificate, names=None, box_service_port=None):
@@ -778,11 +793,11 @@ class WebServer:
             raise RuntimeError(f'The web server refuses the site of the box: {self._process.stderr.read().decode()}')
 
     def _listening_here(self, text):
-        """`text` listening on the two ports of this web server, on this machine only, each block as it says."""
+        """Rewrite the `listen` lines of `text` to the two ports of this web server, on this machine only."""
         ports = {'443': self.tls_port, '80': self.plain_port}
         listening = re.compile(r'^(\s*)listen (\[::\]:)?(443|80)\b([^;]*);', re.MULTILINE)
         if not listening.search(text):
-            raise RuntimeError('The site of the box no longer listens on 443 or 80: the suite reads it to run it')
+            raise RuntimeError('The site of the box does not listen on 443 or 80: the suite reads it to run it')
         return listening.sub(
             lambda found: '' if found[2] else f'{found[1]}listen 127.0.0.1:{ports[found[3]]}{found[4]};', text)
 
@@ -803,7 +818,7 @@ class WebServer:
             self._process.wait(10)
 
     def presented(self, name=None):
-        """Fingerprint of the certificate presented to a browser that asks by `name`, or by address when None."""
+        """Fingerprint of the certificate presented to a browser that asks by `name`, or by address when ``None``."""
         with self._secured(name) as secured:
             return common.fingerprint(common.x509.load_der_x509_certificate(secured.getpeercert(binary_form=True)))
 
@@ -818,7 +833,10 @@ class WebServer:
                 yield secured
 
     def ask(self, method, path, headers=None, name=None, tls=True):
-        """(status, {header name in lower case: value}, body) of a request asked by `name`, or by address."""
+        """Send a request by `name`, or by address when ``None``.
+
+        :return: (status, {header name in lower case: value}, body)
+        """
         host = name or '127.0.0.1'
         lines = [f'{method} {path} HTTP/1.1', f'Host: {host}', 'Connection: close', 'Content-Length: 0',
                  *(f'{key}: {value}' for key, value in (headers or {}).items())]
@@ -849,15 +867,150 @@ def _read_all(connection):
 
 
 def _changed(text, changes):
-    """`text` with each key of `changes` replaced by its value; a key the text does not hold is an error."""
+    """Replace each key of `changes` in `text` by its value.
+
+    :raises RuntimeError: when the text does not hold a key
+    """
     for former, later in changes.items():
         if former not in text:
-            raise RuntimeError(f'The site of the box no longer holds {former!r}: the suite reads it to run it')
+            raise RuntimeError(f'The site of the box does not hold {former!r}: the suite reads it to run it')
         text = text.replace(former, later)
     return text
 
 
-# ---------------------------------------------------------------------------------------------- children
+ODOO_BIN = HOME / 'odoo' / 'odoo-bin'
+# What a box service answers once its web server runs: the route the point of sale asks to know a box is there.
+HELLO = '/hw_proxy/hello'
+EVENT_ROUTE = '/hw_drivers/event'
+
+
+class BoxService:
+    """The box service as its unit runs it: `odoo-bin` with the configuration of the box, in a process of its own.
+
+    The configuration is that of the box with a web server on a port of its own and no pid file. `log()` is what
+    the process wrote to its log file.
+
+    :param options: {name: value} options of the configuration
+    """
+
+    def __init__(self, directory, **options):
+        self.directory = Path(directory)
+        self.port = common.closed_port()
+        self.log_file = self.directory / 'box-service.log'
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read(common.configuration_file(self.directory))
+        parser.set('options', 'http_port', str(self.port))
+        parser.set('options', 'pidfile', '')
+        for name, value in options.items():
+            parser.set('options', name, str(value))
+        self.configuration = self.directory / 'service.conf'
+        with self.configuration.open('w', encoding='utf-8') as file:
+            parser.write(file)
+        self.process = None
+        self.held = []
+
+    def start(self, timeout=180):
+        """Start the process and return once its web server answers the route of the point of sale."""
+        self.process = subprocess.Popen(
+            [sys.executable, str(ODOO_BIN), '--config', str(self.configuration), '--logfile', str(self.log_file)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, cwd=HOME)
+        common.wait_until(
+            lambda: self.process.poll() is not None or self.hello() == 200, 'the box service to answer', timeout)
+        if self.process.poll() is not None:
+            raise AssertionError(f'The box service ended with {self.process.returncode}:\n{self.log()[-3000:]}')
+        return self
+
+    def hello(self):
+        """The status the web server of the process answers to the route of the point of sale; ``None`` when none."""
+        try:
+            connection = http.client.HTTPConnection('127.0.0.1', self.port, timeout=5)
+            try:
+                connection.request('GET', HELLO)
+                return connection.getresponse().status
+            finally:
+                connection.close()
+        except (OSError, http.client.HTTPException):
+            return None
+
+    def log(self):
+        return self.log_file.read_text(errors='replace') if self.log_file.exists() else ''
+
+    def threads(self):
+        """How many threads the process has."""
+        for line in Path('/proc', str(self.process.pid), 'status').read_text().splitlines():
+            if line.startswith('Threads:'):
+                return int(line.split()[1])
+        raise RuntimeError('the process lists no threads')
+
+    def alive(self):
+        return self.process.poll() is None
+
+    def hold_idle_connections(self, count):
+        """Open `count` connections to the web server and send nothing on them."""
+        for _number in range(count):
+            self.held.append(socket.create_connection(('127.0.0.1', self.port), timeout=10))
+
+    def wait_for_event(self, seconds, session='box-suite-station'):
+        """Ask the route of events, which answers after `seconds` seconds at most.
+
+        :return: the thread that waits for the answer; its `answer` holds the status and body, or the error
+        """
+        answer = {}
+
+        def ask():
+            connection = http.client.HTTPConnection('127.0.0.1', self.port, timeout=seconds + 30)
+            try:
+                connection.request('POST', EVENT_ROUTE, headers={'Content-Type': 'application/json'}, body=json.dumps({
+                    'jsonrpc': '2.0', 'method': 'call',
+                    'params': {'listener': {'session_id': session, 'devices': ['box_suite_absent'], 'last_event': 0}}}))
+                response = connection.getresponse()
+                answer.update(status=response.status, body=response.read())
+            except (OSError, http.client.HTTPException) as error:
+                answer['error'] = f'{type(error).__name__}: {error}'
+            finally:
+                connection.close()
+
+        thread = threading.Thread(target=ask, name='box-suite-event', daemon=True)
+        thread.start()
+        thread.answer = answer
+        return thread
+
+    def stop(self, wait=60):
+        """Tell the process to stop as the system does (SIGTERM); one still there after `wait` seconds is killed.
+
+        :return: (seconds until it ended, its exit code); the code is ``None`` for a killed process
+        """
+        began = time.monotonic()
+        self.process.send_signal(signal.SIGTERM)
+        try:
+            self.process.wait(wait)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(30)
+            return time.monotonic() - began, None
+        return time.monotonic() - began, self.process.returncode
+
+    def close(self):
+        for held in self.held:
+            held.close()
+        if self.process is not None and self.process.poll() is None:
+            self.process.kill()
+        if self.process is not None:
+            self.process.wait(30)
+            self.process.stderr.close()
+
+
+def box_service(case, **options):
+    """A started `BoxService` for the test `case`, killed when the test ends.
+
+    :param options: options of its configuration
+    """
+    directory = tempfile.mkdtemp(prefix='box-suite-service-')
+    case.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+    service = BoxService(directory, **options)
+    case.addCleanup(service.close)
+    return service.start()
+
 
 def with_layer_files(files):
     """Write a configuration of the box whose layer also holds `files`, {path in the layer: content}."""
@@ -944,8 +1097,8 @@ class _GitCalls(list):
 def git_commands():
     """List, for the block, the arguments of each git command the box runs, by whichever function it runs it.
 
-    None runs: each answers as a git that found nothing, so that a look for a release reaches no
-    repository. `environments` holds the environment each was given, None when it was given none.
+    No command runs: each answers as a git that found nothing, so that a look for a release reaches no
+    repository. `environments` holds the environment each was given, ``None`` when it was given none.
     """
     commands = _GitCalls()
 

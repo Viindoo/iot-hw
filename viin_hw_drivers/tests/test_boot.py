@@ -1,5 +1,6 @@
 """The gate: how the layer takes its place when the box starts, and where the suite itself may run."""
 import builtins
+import configparser
 import sys
 import tempfile
 import threading
@@ -28,12 +29,12 @@ STEP_WAIT = 60
 
 
 def start_report_in_step_with_the_usb_library():
-    """`start_report` of a box where the device thread of core starts to import the USB library just before the box
-    service does, for the receipt printer module of core: what a slow board, a Raspberry Pi, may do at any start.
+    """Start a box where core's device thread and the box service import the USB library at the same time.
 
-    The device thread waits, at the start of the import, until the box service imports the library too, then a
-    moment more. The report adds 'failed_handler_files', the handler files the box could not load, and
-    'receipt_printer_module': whether the box service has that module.
+    A slow board may do that at any start.
+
+    :return: the start report, with ``failed_handler_files`` (the handler files the box could not load) and
+        ``receipt_printer_module`` (whether the box service has the receipt printer module of core)
     """
     import_ = builtins.__import__
     device_thread_imports, service_imports = threading.Event(), threading.Event()
@@ -56,6 +57,38 @@ def start_report_in_step_with_the_usb_library():
     report['failed_handler_files'] = common.layer('seams.handlers').handler_files()['failed']
     report['receipt_printer_module'] = RECEIPT_PRINTER_MODULE in sys.modules
     return report
+
+
+# A real-time limit short enough for a thread to pass it.
+REAL_TIME_LIMIT_IN_THE_FILE = '5'
+
+
+def start_with_a_real_time_limit_in_the_configuration():
+    """Start a box whose configuration file holds a real-time limit.
+
+    :return: ``limit`` (the limit core works with) and ``file_unchanged`` (whether the start left the file as it was)
+    """
+    directory = tempfile.mkdtemp(prefix='box-suite-')
+    configuration = common.configuration_file(directory)
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read(configuration)
+    parser.set('options', 'limit_time_real', REAL_TIME_LIMIT_IN_THE_FILE)
+    with configuration.open('w', encoding='utf-8') as file:
+        parser.write(file)
+    before = configuration.read_bytes()
+    common.start(configuration)
+    import odoo
+
+    return {'limit': odoo.tools.config['limit_time_real'], 'file_unchanged': configuration.read_bytes() == before}
+
+
+class TestRealTimeLimit(common.BoxStateCase):
+
+    def test_box_runs_with_no_real_time_limit_whatever_its_configuration_holds_and_leaves_the_file_as_it_is(self):
+        started = common.in_new_process(start_with_a_real_time_limit_in_the_configuration)
+
+        self.assertEqual(started['limit'], 0)
+        self.assertIs(started['file_unchanged'], True)
 
 
 class TestDocumentedOrder(common.BoxStateCase):
@@ -91,7 +124,10 @@ class TestUsbLibraryImportedByCoreAndByTheBoxServiceAtOnce(common.BoxStateCase):
 class TestStartOfABoxThatHasAServer(common.BoxStateCase):
 
     def start_with(self, server):
-        """What `common.start_report` says of the box once it started with `server` for its server."""
+        """Start the box with `server` for its server.
+
+        :return: what `common.start_report` says of the box
+        """
         self.keep_web_certificate()
         # Paired the way core pairs and still on the certificate of the image: what makes core ask its vendor for one.
         common.install_web_certificate(common.make_certificate(common.SHIPPED_COMMON_NAME))

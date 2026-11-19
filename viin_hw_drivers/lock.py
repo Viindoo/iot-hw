@@ -61,10 +61,12 @@ def is_locked():
 
 
 def _host(name):
-    """`name` in the one spelling every reader gives it - lower case, an address at its shortest - or None.
+    """The spelling of a host name that every reader gives it.
 
     A browser takes a name that ends in a number for an address, in spellings
     this file does not follow: such a name counts only as four decimal parts.
+
+    :return: the name in lower case, an address at its shortest; ``None`` when readers may disagree on it
     """
     name = name.lower()
     try:
@@ -79,11 +81,14 @@ def _host(name):
 
 
 def origin(address, plain=False):
-    """(scheme, host, port) of a web address, None unless every reader of `address` is sure to find the same three.
+    """The scheme, host and port of a web address that every reader of it finds alike.
 
     The address is http or https and names its host and port bare: no user
-    part, no backslash, no space. With `plain`, what follows the host is free
-    of percent signs and of every character a reader may drop or rewrite.
+    part, no backslash, no space.
+
+    :param plain: also require that what follows the host is free of percent signs and of every
+        character a reader may drop or rewrite
+    :return: ``(scheme, host, port)``; ``None`` unless every reader of `address` is sure to find the same three
     """
     found = _ADDRESS.fullmatch(address) if isinstance(address, str) else None
     scheme = found and found['scheme'].lower()
@@ -111,9 +116,9 @@ def box_hosts():
 def from_other_site():
     """Whether the browser that sent the current request marks it as asked by a page of another web site.
 
-    It does with a `Sec-Fetch-Site` other than `same-origin` or `none`, or with
+    A request is marked by a `Sec-Fetch-Site` other than `same-origin` or `none`, or by
     an `Origin` or a `Referer` whose host is neither the one the request
-    addresses nor this box - the web server of the box hands requests on under
+    addresses nor this box: the web server of the box hands requests on under
     a host of its own. A request without these headers is not marked: a script
     sends none, nor does a browser for an address a person types.
     """
@@ -160,10 +165,12 @@ def proof_holds(proof, token):
 
 
 def unlock(typed_code):
-    """The unlock proof when `typed_code` is the settings code of this box, None otherwise.
+    """The unlock proof for the settings code a person typed.
 
     The caller sends the proof back in the header PROOF_HEADER of each request
     that changes a setting. A box that is not locked needs no proof and gets none.
+
+    :return: the proof; ``None`` when `typed_code` is not the settings code of this box or the box is not locked
     """
     token = _token()
     if not token:

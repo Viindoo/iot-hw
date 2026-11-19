@@ -73,8 +73,9 @@ class _VerifyingRequests(_StandIn):
 def verify_server_calls(module):
     """Have a file of core that is loaded after the gate verify the servers it calls through urllib3.
 
-    `module` gets the stand-in the reports of core get; calling it again changes
-    nothing. False when the module does not name urllib3.
+    `module` gets the stand-in the reports of core get; calling it again changes nothing.
+
+    :return: whether the module has the stand-in now; ``False`` when it does not name urllib3
     """
     named = vars(module).get('urllib3')
     if named is urllib3:
@@ -112,7 +113,7 @@ class _StandInSeam(PartsSeam):
         except AttributeError:
             raise SeamError(f'{caller} does not exist') from None
         if not {name, used} <= set(names):
-            raise SeamError(f'{caller} no longer connects through {name}.{used}')
+            raise SeamError(f'{caller} does not connect through {name}.{used}')
 
     def apply_part(self, part):
         name, library, stand_in, _caller, _used = self.stand_ins[part]

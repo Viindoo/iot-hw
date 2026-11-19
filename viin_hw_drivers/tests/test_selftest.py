@@ -18,22 +18,23 @@ import wifi_common
 
 CREDENTIAL = 'suite-credential-selftest'
 CERTIFICATE = '/viin_hw_homepage/certificate'
-SITE_ADDRESS = '192.168.1.50'
-ROUTER = '192.168.1.1'
+SITE_ADDRESS = '192.0.2.50'
+ROUTER = '192.0.2.1'
 OWN_NAME = 'box.shop.example'
 VIINDOO_NAME = 'k3x9.iot.viindoo.example'
 # The wildcard name of the certificates of core's vendor, as core keeps it once a server handed it over,
 # and the name core derives from it for a box at SITE_ADDRESS.
 VENDOR_ZONE = '*.vendor-zone.example'
-NAME_IN_THE_VENDOR_ZONE = '192-168-1-50.vendor-zone.example'
+NAME_IN_THE_VENDOR_ZONE = f"{SITE_ADDRESS.replace('.', '-')}.{VENDOR_ZONE.removeprefix('*.')}"
 NAME_ENDS = '2027-01-31T00:00:00Z'
 # The end date of the certificate the web server serves, far enough away that it is not ending.
 INSTALLED_ENDS = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=400)).strftime(
     '%Y-%m-%dT%H:%M:%SZ')
 DAY = datetime.timedelta(days=1)
-EARLIER_ADDRESS = '10.11.12.1'
 # The address of the box on its own access point, as core's access point script gives it.
 ACCESS_POINT_ADDRESS = '10.11.12.1'
+# The address a certificate of the box was made at: the box's own address on its access point.
+EARLIER_ADDRESS = ACCESS_POINT_ADDRESS
 WIFI_PASSWORD = 'box-suite-wifi-password-4R7'
 WIFI_JOIN = '/hw_posbox_homepage/update_wifi'
 WIFI_FORGET = '/hw_posbox_homepage/wifi_clear'
@@ -47,7 +48,11 @@ BROKEN_HANDLER_AND_MOVED_SEAM = {
 
 
 def ends_in(days):
-    """The end date of a certificate that ends `days` days from now, before now when negative, as lines carry it."""
+    """Give the end date of a certificate that ends `days` days from now, as lines carry it.
+
+    :param days: days from now; negative for an end date in the past
+    :rtype: str
+    """
     return (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
@@ -56,7 +61,14 @@ def lines_of(result):
 
 
 def self_test_of_a_box_beside_a_server(port, up, channel):
-    """Start a box whose server listens on `port` when `up`, giving `channel` to a report; give its self-test."""
+    """Start a box and run its self-test.
+
+    :param port: port of the server of the box
+    :param up: whether the server listens on `port`
+    :param channel: live channel the server gives to a report
+    :return: the result of the self-test
+    :rtype: dict
+    """
     if up:
         common.FakeServer(port=port, channel=channel)
     common.start()
@@ -69,12 +81,12 @@ def self_test_of_a_box_beside_a_server(port, up, channel):
 
 
 def self_test_beside_a_server(port, up, channel):
-    """The state and the reason of each line of the self-test of a box beside a server (see above)."""
+    """Give the state and the reason of each line of `self_test_of_a_box_beside_a_server`."""
     return lines_of(self_test_of_a_box_beside_a_server(port, up, channel))
 
 
 def actions_beside_a_server(port, up, channel):
-    """The action of each line of the self-test of a box beside a server (see above)."""
+    """Give the action of each line of `self_test_of_a_box_beside_a_server`."""
     return {line['id']: line['action'] for line in self_test_of_a_box_beside_a_server(port, up, channel)['lines']}
 
 
@@ -90,8 +102,9 @@ def self_test_of_a_box_whose_core_moved():
 def browser_address_line_after_a_start(address):
     """Start a box that holds `address` and gives it to browsers. Meant for `common.in_new_process`.
 
-    Gives 'accept_again', what its browser address line says of it, and 'certificate', the fingerprint of the
-    certificate installed once the line was worked out.
+    :return: ``accept_again``, what its browser address line says of it, and ``certificate``, the fingerprint of the
+        certificate installed once the line was worked out
+    :rtype: dict
     """
     chosen = {'address': address, 'source': 'address', 'core': address}
     with box.network({'eth0': address}):
@@ -118,7 +131,11 @@ class _UnsynchronisedLibrary:
 
 
 def clock_a_paired_box_sets_at_its_start():
-    """Start a paired box whose clock no time server keeps; give the times it asked the system to set its clock to."""
+    """Start a paired box whose clock no time server keeps.
+
+    :return: the times the box asked the system to set its clock to
+    :rtype: list
+    """
     load = ctypes.CDLL
 
     def library(name, *arguments, **options):
@@ -141,7 +158,11 @@ class SelfTestCase(common.BoxCase):
         return lines_of(common.layer('selftest').run(wait=wait, refresh=True))
 
     def line(self, identifier, wait=20):
-        """The whole line of the self-test with the id `identifier`: state, reason, action and details."""
+        """Give the line of the self-test with the id `identifier`.
+
+        :return: the line, with its state, reason, action and details
+        :rtype: dict
+        """
         lines = common.layer('selftest').run(wait=wait, refresh=True)['lines']
         return next(line for line in lines if line['id'] == identifier)
 
@@ -152,6 +173,7 @@ class TestNetworkLine(SelfTestCase):
         self.assertEqual(self.lines()['network'], ['failed', 'no_address'])
 
     def test_box_with_a_link_local_address_only_names_the_network_as_failing(self):
+        # The link-local range is the case under test.
         with box.network({'eth0': '169.254.3.3'}):
             self.assertEqual(self.lines()['network'], ['failed', 'link_local_only'])
 
@@ -177,7 +199,7 @@ class TestNetworkLineAfterAJoin(SelfTestCase):
     """The Network line tells why the latest join of a Wi-Fi network from the page failed, while it is the latest."""
 
     def note_join(self, result, ssid='Workshop'):
-        """The latest join asked comes to `result`, as the record of the box says it."""
+        """Write the record of the box as if its latest join ended in `result`."""
         wifi = common.layer('wifi')
         directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix='box-suite-')))
         self.enterContext(mock.patch.object(wifi, 'LAST_JOIN', directory / 'last-join.json'))
@@ -325,8 +347,7 @@ class TestRegistrationAndLiveChannelLines(ServerAtAPortCase):
 def _hold_the_device_loop(manager):
     """Stop the device loop of core `manager` at the start of its next pass, for the rest of the process.
 
-    Once the box has a server the loop reports by itself: a report of it that ends after the clock jump would be the
-    one the server took last, at a moment the test does not choose.
+    Once the box has a server the loop reports by itself, at a moment the test does not choose.
     """
     held = threading.Event()
     look = manager._get_changes_to_send
@@ -342,7 +363,14 @@ def _hold_the_device_loop(manager):
 
 
 def moments_seen_after_the_clock_of_the_box_jumps(port, paired_by_report):
-    """Note a moment on a clock the test drives, correct the wall clock by two days, and give the lines 5 s later."""
+    """Correct the wall clock of a box by two days after it noted a moment, then run its self-test 5 seconds later.
+
+    Meant for `common.in_new_process`.
+
+    :param paired_by_report: whether the server accepted the box by a report, else by its live channel
+    :return: the details of each line of the self-test, by line id
+    :rtype: dict
+    """
     common.start()
     reporting = common.layer('reporting')
     manager = common.core('main').manager
@@ -433,11 +461,11 @@ class TestBrowserAddressLine(SelfTestCase):
         self.assertEqual((given['address'], given['kind']), (SITE_ADDRESS, 'address'))
 
     def healthy_line_for(self, source, address, installed_kind):
-        """The line of a box that serves a certificate of `installed_kind` and gives browsers `address` of `source`."""
+        """Give the line of a box that serves a certificate of `installed_kind` and gives browsers `address`."""
         return self.line_for(source, address, installed_kind, INSTALLED_ENDS)
 
     def line_for(self, source, address, installed_kind, installed_ends):
-        """The line of a box that gives browsers `address` of `source` and serves a certificate of `installed_kind`
+        """Give the line of a box that gives browsers `address` of `source` and serves a certificate of `installed_kind`
         issued for that address and ending at `installed_ends`."""
         trust, identity = common.layer('trust'), common.layer('seams.identity')
         installed = {'kind': installed_kind, 'expiry': installed_ends, 'subject': 'CN=box', 'names': [address]}
@@ -501,8 +529,10 @@ class TestBrowserAddressLine(SelfTestCase):
         return [host, f'{host}.local', *addresses]
 
     def line_for_address_with(self, certificate=None, address=SITE_ADDRESS):
-        """The browser address line of a box that holds `address` and gives it to browsers; the web server serves
-        `certificate` when one is given."""
+        """Give the browser address line of a box that holds `address` and gives it to browsers.
+
+        :param certificate: the `Certificate` the web server serves, when one is given
+        """
         if certificate:
             self.keep_web_certificate()
             common.install_web_certificate(certificate)
@@ -522,7 +552,8 @@ class TestBrowserAddressLine(SelfTestCase):
         trust = common.layer('trust')
         # A look that succeeds clears the memory of the one that failed.
         self.addCleanup(trust.refresh_box_certificate)
-        with box.network({'eth0': SITE_ADDRESS}), common.failing('sudo'), self.assertRaises(Exception):
+        with box.network({'eth0': SITE_ADDRESS}), common.failing('sudo'), \
+                self.assertRaises((OSError, subprocess.SubprocessError)):
             trust.refresh_box_certificate()
 
         line = self.line_for_address_with()
@@ -539,7 +570,7 @@ class TestBrowserAddressLine(SelfTestCase):
                          ('warning', 'certificate_not_for_address', 'renew_own_certificate'))
 
     def serving(self, certificate):
-        """Have the web server of the box present `certificate`, a `Certificate`, or none when it is None."""
+        """Have the web server of the box present `certificate`, or none when it is ``None``."""
         self.keep_web_certificate()
         box.keep_files(self, common.core('tools.helpers').path_file(common.layer('trust').RENEWAL_FILE))
         if certificate:
@@ -634,7 +665,7 @@ class TestBrowserAddressLine(SelfTestCase):
 class TestBrowserAddressLineWhileTheWebServerRefusesACertificate(common.BoxStateCase):
 
     def looks(self):
-        """What `follow_a_certificate_the_web_server_refused_to_take` gives, once for the tests of the class."""
+        """Give `follow_a_certificate_the_web_server_refused_to_take`, run once for the class."""
         cls = type(self)
         if '_looks' not in vars(cls):
             self.keep_web_certificate()
@@ -657,7 +688,7 @@ class TestViindooNameLine(SelfTestCase):
         common.store_box_configuration(remote_server='http://127.0.0.1:9', token=CREDENTIAL)
 
     def answered(self, **record):
-        """The server last answered the question of the box for a name with `record`."""
+        """Record `record` as the last answer of the server to the question of the box for a name."""
         common.layer('update').change_state(lambda state: state.update(public_name=record))
 
     def test_customer_server_that_offers_no_name_is_neutral(self):

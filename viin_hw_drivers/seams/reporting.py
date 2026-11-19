@@ -26,7 +26,7 @@ class _ManagerSeam(FunctionSeam):
         except AttributeError:
             raise SeamError('Manager.run does not exist') from None
         if missing:
-            raise SeamError('Manager.run no longer uses %s' % ', '.join(sorted(missing)))
+            raise SeamError('Manager.run does not use %s' % ', '.join(sorted(missing)))
 
 
 @register
@@ -41,7 +41,7 @@ class ReportOutcome(_ManagerSeam):
     def check(self):
         super().check()
         if not {'server_url', 'iot_channel'} <= _names(self._resolve()[2]):
-            raise SeamError('no longer gives the channel the server answers to the client it is handed')
+            raise SeamError('does not give the channel the server answers to the client it is handed')
 
     def replacement(self, original):
         def send_alldevices(manager, iot_client=None):
@@ -112,7 +112,7 @@ class _Callback(FunctionSeam):
             raise SeamError('WebsocketClient.run does not exist')
         callback = self.name.rpartition('.')[2]
         if callback not in _names(run):
-            raise SeamError(f'WebsocketClient.run no longer hands {callback} to its connection')
+            raise SeamError(f'WebsocketClient.run does not hand {callback} to its connection')
 
     def replacement(self, original):
         return self._wrap(original)

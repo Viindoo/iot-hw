@@ -9,6 +9,7 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 
 import common
 import services_common as box
@@ -24,13 +25,13 @@ NOT_A_COMMIT_OF_CORE = '0123456789abcdef0123456789abcdef01234567'
 
 
 def _box_runs_the_trees_of(update, releases):
-    """The box was started from the trees of `releases`: the pair it runs is read from them, as at a start."""
+    """Have the box run the pair of commits the trees of `releases` hold, as at a start."""
     update.LAYER_TREE, update.CORE_TREE = releases.layer_tree, releases.core_tree
     update._RUNNING.update(update._read_running())
 
 
 def _start_on_the_release(update, releases):
-    """The box starts on the pair its trees hold, and runs for the minutes after which it marks a release good."""
+    """Start the box on the pair its trees hold, and let it run until it marks a release good."""
     _box_runs_the_trees_of(update, releases)
     update.GOOD_AFTER = 0
     keeper = update._Keeper()
@@ -45,8 +46,8 @@ def _start_on_the_release(update, releases):
 def _box_that_looks():
     """Start a box on the trees of a new set of releases, with the guard of the case and no state of an earlier one.
 
-    Gives (releases, update, happened, look): `look(case, **options)` has the box look for a release as
-    `update.check` does and records in `happened[case]` what it did.
+    :return: ``(releases, update, happened, look)``; `look(case, **options)` has the box look for a release as
+        `update.check` does and records in `happened[case]` what it did
     """
     box.STATE_FILE.write_text('{}')
     releases = box.Releases(tempfile.mkdtemp(prefix='box-suite-'))
@@ -81,7 +82,10 @@ def _box_that_looks():
 
 
 def _offered_ref(releases):
-    """The commit the layer tree holds as the one it fetched to check, '' while it fetched none."""
+    """Read the commit the layer tree holds as the one it fetched to check.
+
+    :return: the commit, or ``''`` while it fetched none
+    """
     try:
         return releases.git(releases.layer_tree, 'rev-parse', '--verify', '--quiet', 'refs/viin-box/offered')
     except subprocess.CalledProcessError:
@@ -91,10 +95,10 @@ def _offered_ref(releases):
 def look_for_releases():
     """Start a box, have it look for a release in each case a channel can offer, and say what it did each time.
 
-    Gives one record per case: the state and the channel of the look, the 'trees' the box runs
-    after it, whether it 'restarted', the release 'offered', the 'trial', whether the 'channel_file'
-    exists, the 'release' the box runs and the self-test line of its software. 'guard' says what
-    the starts of a release that does not start did, 'promoted' what is left of a candidate box.
+    :return: one record per case: the ``state`` and the ``channel`` of the look, the ``trees`` the box runs after
+        it, whether it ``restarted``, the release ``offered``, the ``trial``, whether the ``channel_file`` exists,
+        the ``release`` the box runs and the self-test line of its software; ``guard`` says what the starts of a
+        release that does not start did, ``promoted`` what is left of a candidate box
     """
     releases, update, happened, look = _box_that_looks()
     [core_0, core_1] = releases.core_commits
@@ -181,8 +185,9 @@ def look_for_releases():
 def look_at_the_release_channel():
     """Start a box on release 1.0, publish releases to its channel in each way a channel can be bound, and look.
 
-    A look is a scheduled one (the box decides itself whether to apply), as the box makes them on its own.
-    Gives the record of each case, as `look_for_releases` does.
+    A look is a scheduled one: the box decides itself whether to apply.
+
+    :return: the record of each case, as `look_for_releases` gives it
     """
     releases, update, happened, look = _box_that_looks()
     [core_0, core_1] = releases.core_commits
@@ -250,8 +255,10 @@ def first_looks_of_a_box_at_its_start():
     """Start a box on release 1.0 while the release channel offers 1.1, then start it again, with and without
     a server, and say what each start did.
 
-    Meant for `common.in_new_process`. One record per start: 'trees' and 'release' the box runs after it,
-    'offered' (the release found and not applied), 'restarted', and the 'hosts' the box asked.
+    Meant for `common.in_new_process`.
+
+    :return: one record per start: the ``trees`` and the ``release`` the box runs after it, ``offered`` (the
+        release found and not applied), ``restarted``, and the ``hosts`` the box asked
     """
     releases, update, happened, _look = _box_that_looks()
     [core_0, core_1] = releases.core_commits
@@ -418,6 +425,128 @@ class TestReleases(common.BoxStateCase):
         self.assertEqual(other['trees'], self.happened['promoted_trees'])
 
 
+# The waits of the retry of a look that could not reach the repository, shortened for the suite: the first, and the
+# longest the series of doubled waits reaches.
+RETRY_FIRST = 0.5
+RETRY_LAST = 2
+
+
+def looks_that_cannot_reach_the_repository():
+    """Start a box whose repository cannot be reached, with waits of RETRY_FIRST seconds doubling up to RETRY_LAST.
+
+    Meant for `common.in_new_process`.
+
+    :return: ``moments`` (the times, in seconds after the first look, of the looks made while the repository was
+        away), ``asked`` (the `again` each was made with), ``reached`` (whether a look reached the repository by
+        itself once it could be reached), ``after_reached`` (the number of looks made after one reached it),
+        ``away_again`` (the times of the looks made once it was out of reach again), ``retry_timers`` (the retries
+        armed after three looks made while it was away) and ``no_repository`` (the number of looks made after the
+        box, which has no tree to compare with its repository, looked)
+    """
+    releases, update, happened, look = _box_that_looks()
+    update.RETRY_FIRST, update.RETRY_LAST = RETRY_FIRST, RETRY_LAST
+    # The look of the start found no repository to reach, as every look here does, and armed its retry on the real
+    # waits: the case begins with none armed.
+    with update._retry_lock:
+        started = update._retry['timer']
+        update._retry.update(timer=None, wait=0)
+    if started:
+        started.cancel()
+    moments, asked = [], []
+    looking = update._look
+
+    def counted(state, again):
+        moments.append(time.monotonic())
+        asked.append(again)
+        return looking(state, again)
+
+    update._look = counted
+    os.environ['GIT_CONFIG_GLOBAL'] = releases.unreachable
+    look('unreachable')
+    time.sleep(RETRY_FIRST + 1 + 2 + RETRY_LAST * 2 + 1)
+    away = list(moments)
+    happened['moments'] = [moment - away[0] for moment in away]
+    happened['asked'] = list(asked)
+    os.environ['GIT_CONFIG_GLOBAL'] = releases.reachable
+    try:
+        common.wait_until(lambda: update.status()['last_check']['state'] == 'no_channel',
+                          'a look to reach the repository', RETRY_LAST + 5)
+        happened['reached'] = True
+    except AssertionError:
+        happened['reached'] = False
+    before = len(moments)
+    time.sleep(RETRY_LAST * 2 + 1)
+    happened['after_reached'] = len(moments) - before
+
+    os.environ['GIT_CONFIG_GLOBAL'] = releases.unreachable
+    before = len(moments)
+    update.check()
+    time.sleep(RETRY_FIRST + 1)
+    happened['away_again'] = [moment - moments[before] for moment in moments[before:]]
+    os.environ['GIT_CONFIG_GLOBAL'] = releases.reachable
+    time.sleep(RETRY_LAST + 1)
+
+    os.environ['GIT_CONFIG_GLOBAL'] = releases.unreachable
+    for _manual_look in range(3):
+        update.check()
+    happened['retry_timers'] = len([thread for thread in threading.enumerate() if thread.name == 'ViinUpdateRetry'])
+    os.environ['GIT_CONFIG_GLOBAL'] = releases.reachable
+    time.sleep(RETRY_LAST + 1)
+
+    update._RUNNING.update(layer_commit='')
+    before = len(moments)
+    update.check()
+    time.sleep(RETRY_FIRST * 3)
+    happened['no_repository'] = len(moments) - before
+    return happened
+
+
+class TestLookThatCouldNotReachTheRepository(common.BoxStateCase):
+    """A look that found the repository out of reach is made again by itself, on waits that double."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        kept = {path: path.read_bytes() if path.exists() else None for path in (box.STATE_FILE, box.CHANNEL_FILE)}
+        try:
+            cls.happened = common.in_new_process(looks_that_cannot_reach_the_repository)
+        finally:
+            for path, content in kept.items():
+                box._put_back(path, content)
+
+    def test_look_that_cannot_reach_the_repository_is_made_again_on_waits_that_double_up_to_the_longest(self):
+        moments = self.happened['moments']
+        waits = [later - earlier for earlier, later in zip(moments, moments[1:])]
+
+        self.assertGreaterEqual(len(waits), 4, moments)
+        for wait, stated in zip(waits, (RETRY_FIRST, RETRY_FIRST * 2, RETRY_LAST, RETRY_LAST)):
+            with self.subTest(stated=stated):
+                self.assertGreaterEqual(wait, stated)
+                self.assertLess(wait, stated + 1)
+
+    def test_look_made_again_reaches_the_repository_once_it_can_be_reached_with_nobody_asking(self):
+        self.assertIs(self.happened['reached'], True)
+
+    def test_look_made_again_is_the_look_the_start_makes(self):
+        self.assertEqual(set(self.happened['asked']), {False})
+
+    def test_look_that_reaches_the_repository_ends_the_retries(self):
+        self.assertEqual(self.happened['after_reached'], 0)
+
+    def test_repository_that_was_reached_and_is_away_again_is_looked_for_again_on_the_first_wait(self):
+        looks = self.happened['away_again']
+
+        self.assertGreaterEqual(len(looks), 2, looks)
+        self.assertGreaterEqual(looks[1], RETRY_FIRST)
+        self.assertLess(looks[1], RETRY_FIRST + 1)
+
+    def test_looks_made_while_the_repository_is_away_arm_one_retry_only(self):
+        self.assertEqual(self.happened['retry_timers'], 1)
+
+    def test_box_that_has_no_repository_to_compare_with_is_not_made_to_look_again(self):
+        self.assertEqual(self.happened['no_repository'], 1)
+
+
 class TestFirstLookAtStart(common.BoxStateCase):
     """A box without a server takes its first look for a release when it starts, not only at night."""
 
@@ -459,8 +588,7 @@ class TestFirstLookAtStart(common.BoxStateCase):
 
 
 class TestRollBackGuard(common.BoxStateCase):
-    """The guard is run as the system runs it, around the starts of the box service, after an update moved the box
-    from release 1.0 to release 1.1."""
+    """The guard around the starts of the box service, after an update moved the box from release 1.0 to 1.1."""
 
     def setUp(self):
         super().setUp()
@@ -520,6 +648,7 @@ class TestRollBackGuard(common.BoxStateCase):
 
         self.assertEqual(list(self.releases.heads()), self.target)
         self.assertEqual(self.stored()['trial']['starts'], 1)
+
 
 class TestReleaseChannel(common.BoxStateCase):
     """The release channel of a series is the branch a published release moves: the box follows nothing else."""
@@ -613,7 +742,7 @@ class TestStateFileSharedWithTheGuard(common.BoxCase):
 
     @staticmethod
     def stopped_service_seen_by_the_guard():
-        """The guard as the system runs it after the box service stopped by itself, not yet ended."""
+        """Run the guard for a box service that stopped by itself and has not ended."""
         return subprocess.Popen(['python3', '-I', str(box.GUARD), '--stopped'], stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL, env=dict(os.environ, SERVICE_RESULT='success'))
 
@@ -687,8 +816,9 @@ class TestStateLockFileOfAnotherUser(common.BoxCase):
     def setUp(self):
         super().setUp()
         with open('/proc/sys/fs/protected_regular') as sysctl:
-            if int(sysctl.read()) < 1:
-                self.skipTest('the machine does not protect regular files in shared directories')
+            protection = int(sysctl.read())
+        self.assertGreaterEqual(
+            protection, 1, 'the box suite needs a kernel that protects regular files in shared directories')
         descriptor, self.lock = tempfile.mkstemp(prefix='box-suite-state-', suffix='.lock', dir='/tmp')
         os.close(descriptor)
         self.addCleanup(os.unlink, self.lock)

@@ -66,7 +66,7 @@ MOVED_LATER_SEAM = {SEAM_FILE: SEAM_FILE_CONTENT.replace('MOVED = False', 'MOVED
 
 
 def nightly_update_checks():
-    """The actions by which core asks for its update check every night, on the box started in this process."""
+    """List the actions by which core asks for its update check at night, on the box started in this process."""
     import schedule
 
     return [job for job in schedule.jobs if getattr(job.job_func, '__name__', '') == 'check_git_branch']
@@ -76,15 +76,14 @@ def use_the_update_check_a_file_of_the_layer_gives():
     """Start a box, give it an update check as a file of the layer does, and have core ask for its check.
 
     Meant for `common.in_new_process`: the check a box was given holds for as long as its process.
-    The check given runs until it is told to end. Gives what happened, each as a number or a truth:
 
-    * 'ended_when_core_got_its_answer' - the runs of the check that had ended when the nightly
-      action of core, which asks for the check, came back;
-    * 'started' - whether that ask started the check;
-    * 'runs_after_a_second_ask' - the runs started once core had asked again while the first ran;
-    * 'runs_after_the_first_ended' - the runs started once core had asked again after the first ended;
-    * 'runs_after_a_start_that_failed' - the runs started once core had asked twice more, the
-      first time on a machine that refused the check its thread.
+    :return: a number or a truth for each of
+        ``ended_when_core_got_its_answer`` (the runs that had ended when the nightly action of core came back),
+        ``started`` (whether that ask started the check),
+        ``runs_after_a_second_ask`` (the runs started once core asked again while the first ran),
+        ``runs_after_the_first_ended`` (the runs started once core asked again after the first ended) and
+        ``runs_after_a_start_that_failed`` (the runs started once core asked twice more, the first time on a
+        machine that refused the check its thread)
     """
     common.start()
     helpers = common.core('tools.helpers')
@@ -134,16 +133,14 @@ def use_the_update_check_a_file_of_the_layer_gives():
 def use_the_seams_a_file_added_to_the_layer_declares():
     """Start a box whose layer holds SEAM_FILE, then use the two seams of that file.
 
-    Meant for `common.in_new_process`. Gives:
+    Meant for `common.in_new_process`.
 
-    * 'integrity' - the state of the layer once the box started;
-    * 'calls_counted' - how many calls the first seam counted for one call this thread made to the
-      function it wraps, once the seam had been applied three times in all;
-    * 'server_before_reset' and 'server_after_reset' - the address of its server as core reads
-      it before and after core itself forgot that server, which resets what the wrapped
-      function keeps; the second tells when core could not;
-    * 'later_seam_once_applied' - the state of the second seam once the layer was asked twice
-      to apply it, and 'later_seam_applications' how many times it changed its symbol.
+    :return: ``integrity`` (the state of the layer once the box started), ``calls_counted`` (how many calls the
+        first seam counted for one call this thread made to the function it wraps, once the seam had been applied
+        three times), ``server_before_reset`` and ``server_after_reset`` (the address of its server as core reads
+        it before and after core forgot that server; the second tells when core could not),
+        ``later_seam_once_applied`` (the state of the second seam once the layer was asked twice to apply it) and
+        ``later_seam_applications`` (how many times it changed its symbol)
     """
     happened = {'integrity': common.start_report(layer_files=SEAM_FILES)['integrity']}
     seams, added = common.layer('seams'), common.layer('seams.box_suite')
@@ -212,7 +209,10 @@ class TestCertificateServiceOfTheVendorOfCore(common.BoxCase):
         common.store_box_configuration(db_uuid='suite-database', enterprise_code='suite-contract')
 
     def asked_by(self, step):
-        """The hosts other than this machine that the box asked while `step` ran."""
+        """Run `step`.
+
+        :return: the hosts other than this machine that the box asked meanwhile
+        """
         with common.AskedHosts() as asked:
             step()
         return [host for host in asked.hosts if host not in ('127.0.0.1', '::1', 'localhost')]
@@ -257,7 +257,10 @@ class TestUpdateCheckAFileOfTheLayerGives(common.BoxStateCase):
 class TestSeamsOfAFileAddedToTheLayer(common.BoxStateCase):
 
     def happened(self):
-        """What `use_the_seams_a_file_added_to_the_layer_declares` gives, once for the tests of the class."""
+        """Run `use_the_seams_a_file_added_to_the_layer_declares` once for the tests of the class.
+
+        :return: what it gives
+        """
         cls = type(self)
         if '_happened' not in vars(cls):
             server = self.server()
@@ -312,7 +315,7 @@ class TestThreadStartWithAnotherSignature(common.MovedSeamCase):
     other_seams = (3, 10, 12, 13, 18)
 
 
-class TestPairingCodeThreadNoLongerStartedOnImport(common.MovedSeamCase):
+class TestPairingCodeThreadNotStartedByCoreOnImport(common.MovedSeamCase):
     number = 2
     core_changes = {'connection_manager.start()': 'connection_manager.daemon = True'}
     other_seams = (1, 3, 10, 12, 13, 18)
