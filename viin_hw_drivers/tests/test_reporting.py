@@ -4,17 +4,17 @@ import time
 import common
 import services_common as box
 
-# How long the suite has a report wait for a server that does not answer, instead of the half minute of a box.
+# How long the suite has a report wait for a server that does not answer.
 SHORT_WAIT = 2
 
 
 def follow_the_reports_of_a_box():
-    """Start a box, have it report to servers that take, refuse, are down or never answer, and say what it kept.
+    """Start a box and have it report to servers that take, refuse, are down or never answer.
 
-    Gives the `outcome` the box kept after each report ('taken', 'refused', 'down', 'silent'),
-    'sent_unasked' (reports the box sent while nothing changed and nobody asked),
-    'sent_when_asked' (those it sent once a part of the layer asked for one) and
-    'waited_for_silent', the seconds the report to the silent server held its caller.
+    :return: a dict with the `outcome` the box kept after each report (keys 'taken', 'refused', 'down',
+        'silent'), 'sent_unasked' (reports sent while nothing changed and nobody asked), 'sent_when_asked'
+        (reports sent once a part of the layer asked for one) and 'waited_for_silent' (seconds the report
+        to the silent server held its caller)
     """
     common.start()
     reporting = common.layer('reporting')
@@ -34,7 +34,7 @@ def follow_the_reports_of_a_box():
     def reports():
         return len([request for request in taking.requests if request['path'] == '/iot/setup'])
 
-    # Core's device loop runs every three seconds: two of its passes see whatever was still changing.
+    # Long enough for core's device loop to pass twice over whatever is still changing.
     time.sleep(7)
     settled = reports()
     time.sleep(7)

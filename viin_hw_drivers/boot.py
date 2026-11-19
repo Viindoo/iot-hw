@@ -23,10 +23,8 @@ CORE = 'odoo.addons.hw_drivers'
 HOMEPAGE = 'viin_hw_homepage'
 # The seam the home page module declares in the file that closes and locks the routes of core.
 CORE_ROUTES_SEAM = 13
-# The USB library, which the device thread of core and the receipt printer module of core, imported by the box
-# service after the layer, both import first. Its package imports its own modules as it starts, so two threads that
-# import it at once may each be handed a module halfway loaded, and both lose it: the USB devices and the receipt
-# printer module with them. Imported once before the threads of core run, it is whole for each of them.
+# Two threads that import the USB package at once (the device thread of core and the receipt printer module of
+# core) can each be handed a half-loaded module and both lose it: imported once before core's threads run, it is whole.
 USB_LIBRARY = 'usb.core'
 
 
@@ -35,7 +33,7 @@ def _part(name):
 
 
 def start():
-    """Put the layer in place and let core start. Never raises: the box starts whatever goes wrong here."""
+    """Put the layer in place and let core start; a failure is logged and the box starts anyway."""
     problems = []
     try:
         _reset_if_asked()
@@ -52,7 +50,7 @@ def start():
 
 
 def _report_unfinished(error):
-    """Have the state of the layer name a gate that did not run to its end; never raises."""
+    """Record in the state of the layer that the gate did not run to its end."""
     try:
         _part('seams').report_problem('gate', f'{type(error).__name__}: {error}')
     except Exception:
@@ -72,10 +70,9 @@ def _reset_if_asked():
 
 
 def _core_helpers_alone():
-    """Core's helper file under a name of its own.
+    """Core's helper module, loaded without importing core.
 
-    Importing it the usual way imports core, which reads its configuration and
-    prepares its threads at once; the reset must come before that.
+    Importing core reads its configuration and prepares its threads; the reset must come before that.
     """
     from odoo.tools.misc import file_path
 
@@ -91,6 +88,7 @@ def _start(problems):
     for source, message in problems:
         seams.report_problem(source, message)
     _guarded(seams, HOMEPAGE, _expect_homepage, seams)
+    _guarded(seams, 'real-time limit', _lift_real_time_limit)
     gate = _thread_gate(seams)
     in_order = CORE not in sys.modules
     if in_order and gate:
@@ -125,8 +123,23 @@ def _start(problems):
         by_state, [_thread_label(thread) for thread in released], [_thread_label(thread) for thread in withheld])
 
 
+def _lift_real_time_limit():
+    """Have core end no thread of the box service for its age.
+
+    Core answers a thread past the limit by restarting the whole service, the tills' devices with it, and an
+    idle connection is such a thread; the layer closes those itself. The value is set at every start, so a box
+    updated in place has it without a change to its configuration file.
+    """
+    import odoo
+
+    odoo.tools.config['limit_time_real'] = 0
+
+
 def _thread_gate(seams):
-    """The gate that holds the threads of core; None, and a problem of the layer, when its file cannot be loaded."""
+    """The gate that holds the threads of core.
+
+    :return: the gate, or ``None`` (and a problem of the layer) when its file cannot be loaded
+    """
     try:
         return _part('seams.startup').gate
     except Exception as error:
@@ -171,9 +184,8 @@ def _guarded(seams, source, step, *args, **kwargs):
 def _load_files(seams):
     """Import every service file and controller file the layer holds, each on its own.
 
-    A file that cannot be loaded costs what it provides and nothing else. The
-    gate is still holding the threads: one a file starts when it is imported
-    runs when those of core do.
+    A file that cannot be loaded costs what it provides and nothing else. A thread a file starts on import
+    runs when those of core do, as the gate still holds them.
     """
     names = [found.name for found in pkgutil.iter_modules(sys.modules[PACKAGE].__path__)
              if not found.ispkg and found.name != 'boot']
@@ -184,7 +196,7 @@ def _load_files(seams):
 
 
 def _import_usb_library():
-    """Import the USB library whole, before the threads of core run. A box without it starts as core does without it."""
+    """Import the USB library whole, before the threads of core run; a box without it starts as core does."""
     try:
         importlib.import_module(USB_LIBRARY)
     except ModuleNotFoundError:
@@ -223,10 +235,13 @@ def _layer_without_start():
 def check(arguments=None):
     """Check every seam against the core of a configuration, start nothing, and return the exit code.
 
-    0 when every seam holds, 1 when one does not or a part of the layer is not
-    loaded, 2 when core itself cannot be imported. A seam that is applied only
-    once core has loaded its device handlers is checked against what is on the
-    disk and printed as deferred.
+    A seam applied only once core has loaded its device handlers is checked against what is on the disk and
+    printed as deferred.
+
+    :param arguments: command-line arguments; ``None`` reads ``sys.argv``
+    :return: 0 when every seam holds, 1 when a seam does not or a part of the layer is not loaded, 2 when core
+        cannot be imported
+    :rtype: int
     """
     parser = argparse.ArgumentParser(
         description='Check that the box software still has every symbol the Viindoo layer relies on.')

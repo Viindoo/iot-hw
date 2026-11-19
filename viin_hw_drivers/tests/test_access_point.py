@@ -36,7 +36,11 @@ class AccessPointCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.directory, True)
 
     def box_copy(self, name='box', configuration=CORE_CONFIGURATION, addresses=None):
-        """The root of a box: its access point configured as `configuration`, its interfaces with `addresses`."""
+        """Make the root of a box whose access point is configured as `configuration`.
+
+        :param addresses: the hardware address of each interface by its name; one Wi-Fi interface by default
+        :return: the root of the box
+        """
         root = Path(self.directory, name)
         path = root / CONFIGURATION
         path.parent.mkdir(parents=True)
@@ -58,7 +62,10 @@ class AccessPointCase(unittest.TestCase):
         return (root / CONFIGURATION).read_text()
 
     def announced(self, root):
-        """The name the access point of `root` announces, as core reads it from the configuration."""
+        """Read the name the access point of `root` announces, as core reads it from the configuration.
+
+        :return: that name
+        """
         found = CORE_READS_THE_NAME.findall(self.configuration(root))
         self.assertEqual(len(found), 1, found)
         return found[0]

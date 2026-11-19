@@ -3,11 +3,10 @@ be setting the box up through its access point.
 
 A browser reaches the box service through the web server of the box, or straight on the port of the box service,
 which core's status ticket prints. The routes that the box page and its log page read regularly note each request
-in RECORD, whichever way it came: the address of the device, and the time `time.monotonic` gives, a clock every
-process of the box reads alike and that no change of the time of day moves. The web server hands each request on
-from WEB_SERVER, with the address of its own caller in CLIENT_HEADER, which it sets whatever the caller sent. The
-header is believed from there only: a device that reaches the box service straight is noted by its own address,
-whatever it claims.
+in RECORD, whichever way it came: the address of the device, and the time `time.monotonic` gives, which no change of
+the time of day moves. The web server hands each request on from WEB_SERVER, with the address of its own caller in
+CLIENT_HEADER, which it sets whatever the caller sent. The header is believed from there only: a device that reaches
+the box service straight is noted by its own address, whatever it claims.
 """
 import json
 import logging
@@ -32,8 +31,11 @@ _reported = []
 
 
 def begin():
-    """Make RECORD, empty, unless it is there: the watch tells a box page nobody used from a record nobody keeps,
-    where it counts every device connected to the access point as a person."""
+    """Make RECORD, empty, unless it is there.
+
+    The watch tells a box page nobody used from a record nobody keeps, where it counts every device connected to
+    the access point as a person.
+    """
     try:
         descriptor = os.open(RECORD, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
@@ -46,7 +48,10 @@ def begin():
 
 
 def note(request):
-    """Note a use of the box page by `request`, the HTTP request of werkzeug being answered. Never raises."""
+    """Note a use of the box page by the HTTP request being answered; a failure is reported once, never raised.
+
+    :param request: the werkzeug request
+    """
     address = _caller(request)
     if not address:
         return

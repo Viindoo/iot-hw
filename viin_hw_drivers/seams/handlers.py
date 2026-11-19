@@ -1,9 +1,9 @@
 """Seams of the device handlers: the handler files of the layer, the default screen page, the status ticket of a
-receipt printer, the owner of a device.
+receipt printer, the owner of a device, the listing of the devices of an interface and the USB keyboards and
+scanners of core.
 
-Core loads its handler files from one directory, which an update of core
-empties of every file core does not ship. The files of the layer stay in the
-layer and are loaded right after those of core.
+Core loads its handler files from one directory, which an update of core empties of every file core does not
+ship. The files of the layer stay in the layer and are loaded right after those of core.
 """
 import ast
 import contextlib
@@ -50,6 +50,7 @@ STATUS_TICKET = 'print_status'
 STATUS_TICKET_SEAM = 19
 ACTION_ERRORS_SEAM = 20
 PRINTER_LISTING_SEAM = 22
+KEYBOARD_DEVICES_SEAM = 26
 PRINTER_INTERFACE = 'PrinterInterface'
 PRINTER_INTERFACE_HANDLER = 'hw_drivers/iot_handlers/interfaces/PrinterInterface_L.py'
 # What core's status ticket says of the box, each as the text core prints and the one a Viindoo box prints instead.
@@ -70,11 +71,12 @@ _files_lock = threading.Lock()
 
 
 def handler_files():
-    """The handler files of this box, each as '<interfaces or drivers>/<file name>'.
+    """The handler files of this box.
 
-    {'loaded': whether core has loaded the handlers yet; 'core' and 'layer': the
-    files found in each tree; 'failed': [{'file', 'origin': core or layer,
-    'error'}] for those that could not be loaded}.
+    :return: ``{'loaded', 'core', 'layer', 'failed'}``; `loaded` is whether core has loaded the handlers yet,
+        `core` and `layer` the files found in each tree, each as ``<interfaces or drivers>/<file name>``, `failed`
+        a list of ``{'file', 'origin' (core or layer), 'error'}`` for those that could not be loaded
+    :rtype: dict
     """
     with _files_lock:
         return {
@@ -161,7 +163,11 @@ def _namespace(handler):
 
 
 def _handler_namespaces():
-    """{name of a loaded handler file: [its namespaces]}; a file that another one imports is loaded twice by core."""
+    """The namespaces of the loaded handler files.
+
+    :return: a dict of the name of a loaded handler file to the list of its namespaces; a file that another one
+        imports is loaded twice by core
+    """
     main = core('main')
     handlers, pending = [*main.drivers, *main.interfaces.values()], [http.Controller]
     while pending:
@@ -248,13 +254,13 @@ class _HandlerLoader(FunctionSeam):
             raise SeamError(f'{self.module} has no logger to say which files it could not load')
         used = set(inspect.unwrap(loader).__code__.co_names)
         if not {'list_file_by_os', 'exec_module', 'exception'} <= used:
-            raise SeamError('no longer lists its files with list_file_by_os, or no longer logs those it cannot load')
+            raise SeamError('does not list its files with list_file_by_os, or does not log those it cannot load')
         try:
             listed = tuple(inspect.signature(helpers.list_file_by_os).parameters)
         except (AttributeError, TypeError, ValueError):
             raise SeamError(f'{self.module}.list_file_by_os does not exist') from None
         if len(listed) != 1:
-            raise SeamError(f'{self.module}.list_file_by_os no longer takes one directory')
+            raise SeamError(f'{self.module}.list_file_by_os does not take one directory')
 
     def replacement(self, original):
         def load_iot_handlers():
@@ -270,8 +276,8 @@ class _HandlerLoader(FunctionSeam):
                 helpers._logger.removeHandler(watch)
             _step('the list of handler files', _after_core_files, watch.failed)
             _step('the handler files of the layer', _load_layer_files)
-            # The screen page and the printer driver of core exist from now on.
-            apply_seams(only=(SCREEN_PAGE_SEAM, STATUS_TICKET_SEAM, PRINTER_LISTING_SEAM))
+            # The screen page and the printer driver of core exist at this point.
+            apply_seams(only=(SCREEN_PAGE_SEAM, STATUS_TICKET_SEAM, PRINTER_LISTING_SEAM, KEYBOARD_DEVICES_SEAM))
             _step('verified calls of the handler files', _verify_server_calls)
             # Odoo routes the controllers of the handler files only once its routing is built again.
             _step('the routes of the handler files', lazy_property.reset_all, http.root)
@@ -320,7 +326,7 @@ def _screen_page():
 
 
 def _renders_screen_page(tree):
-    """Whether the screen handler `tree` still fills its page as the page of the layer expects."""
+    """Whether the screen handler `tree` fills its page as the page of the layer expects."""
     for node in ast.walk(tree):
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'render'
                 and isinstance(node.func.value, ast.Name) and node.func.value.id == SCREEN_PAGE
@@ -347,9 +353,9 @@ class DefaultScreenPage(Seam):
                 isinstance(name, ast.Name) and name.id == SCREEN_PAGE for name in node.targets)
             for node in tree.body)
         if not assigned:
-            raise SeamError(f'{SCREEN_HANDLER} no longer keeps its page in {SCREEN_PAGE}')
+            raise SeamError(f'{SCREEN_HANDLER} does not keep its page in {SCREEN_PAGE}')
         if not _renders_screen_page(tree):
-            raise SeamError('%s no longer fills its page with %s' % (SCREEN_HANDLER, ', '.join(SCREEN_PAGE_CONTEXT)))
+            raise SeamError('%s does not fill its page with %s' % (SCREEN_HANDLER, ', '.join(SCREEN_PAGE_CONTEXT)))
         try:
             _screen_page()
         except (OSError, jinja2.TemplateError) as error:
@@ -366,7 +372,10 @@ class DefaultScreenPage(Seam):
 
 
 def _status_ticket_texts(tree):
-    """The texts of the status ticket function of the printer handler `tree`; None when it has no such function."""
+    """The texts of the status ticket function of the printer handler `tree`.
+
+    :return: the texts, or ``None`` when the handler has no such function
+    """
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and node.name == PRINTER_DRIVER:
             for member in node.body:
@@ -382,9 +391,7 @@ def _status_ticket_texts(tree):
 def _viindoo_ticket(original, words):
     """`print_status` printing the ticket core composes, with the words of a Viindoo box in place of `words`.
 
-    The ticket is composed on a copy of the driver whose `print_raw` keeps it,
-    as the test of a receipt printer does: the driver itself, which the point
-    of sale prints through at the same time, is not changed.
+    The driver itself, which the point of sale prints through at the same time, is not changed.
     """
     def print_status(driver):
         composed = []
@@ -418,10 +425,10 @@ class StatusTicket(PartsSeam):
         except (OSError, SyntaxError, ValueError) as error:
             raise SeamError(f'{PRINTER_HANDLER} cannot be read ({type(error).__name__})') from None
         if texts is None:
-            raise SeamError(f'{PRINTER_HANDLER} no longer has {PRINTER_DRIVER}.{STATUS_TICKET}(self)')
+            raise SeamError(f'{PRINTER_HANDLER} has no {PRINTER_DRIVER}.{STATUS_TICKET}(self)')
         core_words = STATUS_TICKET_WORDS[part][0]
         if not any(core_words in text for text in texts):
-            raise SeamError(f'{PRINTER_DRIVER}.{STATUS_TICKET} no longer prints {core_words!r}')
+            raise SeamError(f'{PRINTER_DRIVER}.{STATUS_TICKET} does not print {core_words!r}')
 
     def apply_part(self, part):
         drivers = [
@@ -491,7 +498,10 @@ _owners = _Owners()
 
 
 def device_owner(identifier):
-    """The session that last took the device `identifier`, None when none did since the box was switched on."""
+    """The session that last took the device `identifier`.
+
+    :return: the session, or ``None`` when none did since the box was switched on
+    """
     return _owners.of(identifier)
 
 
@@ -624,10 +634,11 @@ def _browse_services():
 
 
 def _mdns_addresses():
-    """{'<service name>.<type>.<domain>' in lower case: IPv4 address} of the services the network announces.
+    """The IPv4 addresses of the services the network announces.
 
-    Empty when the daemon cannot be asked: a printer named by a service name then keeps that name as its address,
-    and is listed beside the same printer found by its IP.
+    :return: a dict of ``<service name>.<type>.<domain>`` in lower case to the address; empty when the daemon
+        cannot be asked, and a printer named by a service name then keeps that name as its address and is listed
+        beside the same printer found by its IP
     """
     try:
         output = _browse_services()
@@ -662,11 +673,12 @@ def _printer_host(entry):
 
 
 def _printer_addresses(listed):
-    """{identifier: address of the printer} for the entries of `listed` that have one.
+    """The address of each printer of `listed` that has one.
 
-    An address is the IP in the URI; a service name of the network
-    (`<name>._ipp._tcp.local`) is matched to the IP its service announces,
-    and any other host name is its own address.
+    An address is the IP in the URI; a service name of the network (`<name>._ipp._tcp.local`) is matched to the IP
+    its service announces, and any other host name is its own address.
+
+    :return: a dict of identifier to address
     """
     hosts = {identifier: _printer_host(entry) for identifier, entry in listed.items()}
     announced = None
@@ -688,9 +700,9 @@ def _printer_addresses(listed):
 def _one_entry_per_printer(listed):
     """The listing of the printers with one entry for each address: the rule of Odoo 19, in the same order.
 
-    Of the entries that share an address, the one the box has registered as a printer already stays; else the one
-    that announces a command language (`CMD:` or `ZPL` in its device id); else the first by identifier. An entry
-    without an address is never left out. The entries are the ones core holds, and are not changed.
+    Of the entries that share an address, the one registered as a printer stays; else the one that announces a
+    command language (`CMD:` or `ZPL` in its device id); else the first by identifier. An entry without an address
+    is never left out. The entries are the ones core holds, and are not changed.
     """
     addresses = _printer_addresses(listed)
     registered = core('main').iot_devices
@@ -724,7 +736,7 @@ def _listing_without_duplicates(original):
 
 
 def _printer_listing_calls(tree):
-    """Whether the printer interface `tree` still has `get_devices(self)` and a dict of the printers it holds."""
+    """Whether the printer interface `tree` has `get_devices(self)` and a dict of the printers it holds."""
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and node.name == PRINTER_INTERFACE:
             names = {
@@ -751,7 +763,7 @@ class PrinterListing(Seam):
             raise SeamError(f'{PRINTER_INTERFACE_HANDLER} cannot be read ({type(error).__name__})') from None
         if not _printer_listing_calls(tree):
             raise SeamError(
-                f'{PRINTER_INTERFACE_HANDLER} no longer has {PRINTER_INTERFACE}.get_devices(self) and printer_devices')
+                f'{PRINTER_INTERFACE_HANDLER} has no {PRINTER_INTERFACE}.get_devices(self) and printer_devices')
 
     def apply(self):
         interface = core('main').interfaces.get(PRINTER_INTERFACE)
@@ -760,3 +772,188 @@ class PrinterListing(Seam):
         function = vars(interface)['get_devices']
         if not getattr(function, 'viin_one_entry_per_printer', False):
             interface.get_devices = functools.wraps(function)(_listing_without_duplicates(function))
+
+
+KEYBOARD_HANDLER = 'hw_drivers/iot_handlers/drivers/KeyboardUSBDriver_L.py'
+KEYBOARD_DRIVER = 'KeyboardUSBDriver'
+# How core's keyboard driver opens the display it translates keys through. The layer opens it the same way, ahead of
+# core, so that both mean the same display; the seam check pins both values in core's file.
+DISPLAY_AUTHORITY = '/run/lightdm/pi/xauthority'
+DISPLAY_NAME = ':0.0'
+MAX_FAILURES = 256
+
+_failures = set()
+_failures_lock = threading.Lock()
+
+
+class DisplayNotReady(Exception):
+    """The display a USB keyboard or scanner reads its keys through does not exist yet."""
+
+
+def _log_failure(interface, identifier, error):
+    """Log the first failure of a device of an interface, per kind of error, in full: the next looks repeat it.
+
+    The wait for the display is not a failure: it is said once at info level, with no traceback.
+    """
+    key = (type(interface).__name__, str(identifier), type(error).__name__)
+    with _failures_lock:
+        first = key not in _failures
+        if first:
+            if len(_failures) >= MAX_FAILURES:
+                _failures.clear()
+            _failures.add(key)
+    if isinstance(error, DisplayNotReady):
+        # A display that is not up yet is the expected wait of a box that starts before X: no fault to read.
+        _logger.log(logging.INFO if first else logging.DEBUG,
+                    'The device %s of the interface %s waits for the display', key[1], key[0])
+    elif first:
+        _logger.warning(
+            'The device %s of the interface %s cannot be started (%s); it is tried again at each look, and this kind '
+            'of failure of this device is logged in full once', key[1], key[0], key[2], exc_info=error)
+    else:
+        _logger.debug('The device %s of the interface %s cannot be started again (%s)', key[1], key[0], key[2])
+
+
+def _forget_failures(interface, identifier):
+    with _failures_lock:
+        for key in [key for key in _failures if key[:2] == (type(interface).__name__, str(identifier))]:
+            _failures.discard(key)
+
+
+def _listing_that_tries_again(original):
+    def update_iot_devices(interface, devices=None):
+        devices = devices or {}
+        detected = interface._detected_devices
+        handled = {identifier: found for identifier, found in devices.items() if identifier in detected}
+        # What core does for the devices it knows: the ones that are gone are disconnected.
+        try:
+            original(interface, dict(handled))
+        except Exception as error:
+            _log_failure(interface, 'known devices', error)
+        for identifier in [identifier for identifier in devices if identifier not in detected]:
+            attempt = {**handled, identifier: devices[identifier]}
+            try:
+                original(interface, attempt)
+            except Exception as error:
+                # Left out of what the interface holds as detected: the next look finds it new.
+                _log_failure(interface, identifier, error)
+            else:
+                handled = attempt
+                _forget_failures(interface, identifier)
+            interface._detected_devices = handled.keys()
+
+    update_iot_devices.viin_tries_again = True
+    return update_iot_devices
+
+
+@register
+class DeviceListing(FunctionSeam):
+    number = 25
+    module = f'{CORE}.interface'
+    name = 'Interface.update_iot_devices'
+    parameters = ('self', 'devices')
+    feature = ('a device whose driver cannot start is tried again at each look, and the other devices of the '
+               'interface are listed')
+
+    def check(self):
+        super().check()
+        code = getattr(self._resolve()[2], '__code__', None)
+        used = set(code.co_names) if code else set()
+        if not {'_detected_devices', 'supported', 'disconnect'} <= used:
+            raise SeamError('does not keep its detected devices in _detected_devices, or does not ask each '
+                            'driver whether it supports a device and disconnect the devices that are gone')
+
+    def replacement(self, original):
+        return _listing_that_tries_again(original)
+
+
+def _keyboard_tree():
+    try:
+        return ast.parse(Path(file_path(KEYBOARD_HANDLER)).read_bytes())
+    except (OSError, SyntaxError, ValueError) as error:
+        raise SeamError(f'{KEYBOARD_HANDLER} cannot be read ({type(error).__name__})') from None
+
+
+def _keyboard_class(tree):
+    return next((node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == KEYBOARD_DRIVER), None)
+
+
+def _assigned_names(body):
+    return {
+        target.id for member in body if isinstance(member, ast.Assign) for target in member.targets
+        if isinstance(target, ast.Name)}
+
+
+def _stores_display(node):
+    """Whether `node` is the assignment target `KeyboardUSBDriver.display`."""
+    if not (isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store)):
+        return False
+    return node.attr == 'display' and isinstance(node.value, ast.Name) and node.value.id == KEYBOARD_DRIVER
+
+
+def _open_display(driver_class, xlib):
+    """Keep on `driver_class` the display core keeps there, opened as core opens it.
+
+    :raises DisplayNotReady: when no display opens
+    """
+    if getattr(driver_class, 'display', 0):
+        return
+    os.environ['XAUTHORITY'] = DISPLAY_AUTHORITY
+    display = xlib.XOpenDisplay(bytes(DISPLAY_NAME, 'utf-8'))
+    if not display:
+        raise DisplayNotReady('no display is open yet: the box tries again at its next look')
+    driver_class.display = display
+
+
+def _with_display_and_own_input_devices(original, driver_class):
+    def __init__(driver, identifier, device):
+        _open_display(driver_class, original.__globals__['xlib'])
+        # Core keeps the input devices of every driver in one list that is never emptied: a driver made after its
+        # device was plugged back would walk the device that was unplugged.
+        driver.input_devices = []
+        original(driver, identifier, device)
+
+    __init__.viin_own_input_devices = True
+    return __init__
+
+
+@register
+class KeyboardDevices(Seam):
+    number = KEYBOARD_DEVICES_SEAM
+    target = f'{KEYBOARD_DRIVER}.__init__ in {CORE_HANDLERS}.drivers.KeyboardUSBDriver_L'
+    feature = ('a USB keyboard or scanner is listed once the display exists, and a device plugged back reads its own '
+               'input devices only')
+    after = HandlerFiles.number
+
+    def check(self):
+        tree = _keyboard_tree()
+        driver = _keyboard_class(tree)
+        if driver is None:
+            raise SeamError(f'{KEYBOARD_HANDLER} has no {KEYBOARD_DRIVER}')
+        constructors = [
+            member for member in driver.body if isinstance(member, ast.FunctionDef) and member.name == '__init__']
+        if len(constructors) != 1 or [argument.arg for argument in constructors[0].args.args] != [
+                'self', 'identifier', 'device']:
+            raise SeamError(f'{KEYBOARD_DRIVER}.__init__ does not take (self, identifier, device)')
+        if 'input_devices' not in _assigned_names(driver.body):
+            raise SeamError(f'{KEYBOARD_DRIVER} does not keep its input devices in input_devices')
+        if 'xlib' not in _assigned_names(tree.body):
+            raise SeamError(f'{KEYBOARD_HANDLER} has no xlib')
+        constants = {node.value for node in ast.walk(constructors[0]) if isinstance(node, ast.Constant)}
+        opened = any(isinstance(node, ast.Attribute) and node.attr == 'XOpenDisplay' for node in ast.walk(tree))
+        kept = any(_stores_display(node) for node in ast.walk(tree))
+        if not (opened and kept and {DISPLAY_AUTHORITY, DISPLAY_NAME} <= constants):
+            raise SeamError(f'{KEYBOARD_DRIVER} does not open its display as the layer does: XOpenDisplay of '
+                            f'{DISPLAY_NAME} with {DISPLAY_AUTHORITY}, kept in {KEYBOARD_DRIVER}.display')
+
+    def apply(self):
+        module = f'{CORE_HANDLERS}.drivers.KeyboardUSBDriver_L'
+        drivers = [
+            driver for driver in core('main').drivers
+            if driver.__module__ == module and driver.__name__ == KEYBOARD_DRIVER]
+        if not drivers:
+            raise SeamError('core did not load its keyboard driver')
+        for driver in drivers:
+            function = vars(driver)['__init__']
+            if not getattr(function, 'viin_own_input_devices', False):
+                driver.__init__ = functools.wraps(function)(_with_display_and_own_input_devices(function, driver))

@@ -49,8 +49,6 @@ PROBE_READ_SIZE = 64
 # No `priority` here: the driver metaclass gives a class its parent's priority plus 1, so this one is 2 (Adam is 1,
 # Toledo 3). It is probed after Toledo and before Adam; a priority set on Adam would move it with no sign.
 class UpaQScaleDriver(_ADAM):
-    """Driver for the UPA-Q serial scale."""
-
     _protocol = UPA_Q_PROTOCOL
 
     def __init__(self, identifier, device):
@@ -67,10 +65,9 @@ class UpaQScaleDriver(_ADAM):
     def supported(cls, device):
         """Whether a weight line comes back, at 9600 baud, to one request for the weight.
 
-        A port that answers nothing is left to the other drivers: a genuine
-        Adam, which speaks at 4800, reaches core's Adam driver. A UPA-Q that
-        stays silent for lack of a load on the pan reaches it too, and is
-        found again at the next start of the box with a load on the pan.
+        A port that answers nothing is left to the other drivers: a genuine Adam, which speaks at 4800, reaches
+        core's Adam driver. A UPA-Q silent for lack of a load on the pan reaches it too, and is found again at the
+        next start of the box with a load on the pan.
         """
         protocol = cls._protocol
         try:

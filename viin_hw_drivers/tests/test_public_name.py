@@ -32,19 +32,19 @@ OTHER_FQDN = f'a2b3c4d5e6f7g2h3.{ZONE}'
 OWN_NAME = 'box.shop.example'
 # Where the web server of the software box answers: the address of the box on its site.
 BOX_ADDRESS = '127.0.0.1'
-OTHER_ADDRESS = '192.168.1.77'
+OTHER_ADDRESS = '192.0.2.77'
 MINUTE = datetime.timedelta(minutes=1)
 HOUR = datetime.timedelta(hours=1)
 DAY = datetime.timedelta(days=1)
 SECOND = datetime.timedelta(seconds=1)
 FIRST_QUESTION = 2 * MINUTE
-# The server relays one question of a box a minute; the box asks again five seconds after that, never at the minute.
+# The server relays one question of a box per FLOOR; the box asks again just after FLOOR has passed, never at it.
 FLOOR = MINUTE
 FOLLOW_UP = FLOOR + 5 * SECOND
-# The longest a daily question may come after its day: a day, and at most an hour drawn at random.
+# The longest a daily question may come after its day: a day plus the delay drawn at random, at most HOUR.
 DAY_AT_THE_LATEST = DAY + HOUR + SECOND
 WEEK = 7 * DAY
-# The longest the client may take over what is due: it wakes once a minute.
+# The longest the client may take over what is due: the period of its wake-up.
 LOOK_AT_THE_LATEST = 60
 CERTIFICATE_LIFE = 89 * DAY
 
@@ -77,7 +77,7 @@ def pem(certificate):
 
 
 def authority(name, issuer=None):
-    """A `common.Certificate` of an authority, valid for longer than any name the tests give."""
+    """Make a `common.Certificate` of an authority, valid for longer than any name the tests give."""
     key = ec.generate_private_key(ec.SECP256R1())
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
     signer = issuer.key if issuer else key
@@ -102,7 +102,7 @@ def authority(name, issuer=None):
 
 
 def issue(public_key, names, valid_from, valid_until, issuer):
-    """A certificate of a web site for `public_key`, as a public authority issues it."""
+    """Make a certificate of a web site for `public_key`, as a public authority issues it."""
     return (
         x509.CertificateBuilder()
         .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, names[0])]))
@@ -139,8 +139,10 @@ def public_authorities(root):
 def site_resolver(names):
     """Be the name service of the site for the names of ZONE during the block.
 
-    `names` maps a name to the addresses it gives, and may change meanwhile; a name it lacks is
-    refused, as a router that keeps public names from leading to private addresses refuses it.
+    A name that `names` lacks is refused, as a router that keeps public names from leading to private addresses
+    refuses it.
+
+    :param names: the addresses each name gives; it may change during the block
     """
     resolve = socket.getaddrinfo
 
@@ -158,7 +160,7 @@ def site_resolver(names):
 
 
 class BoxClock:
-    """The clock of the box, which a test sets."""
+    """The clock the box reads for the moment; a test sets `now`."""
 
     def __init__(self, now):
         self.now = now
@@ -168,13 +170,14 @@ class BoxClock:
 
 
 class NameServer(common.FakeServer):
-    """A server that offers its boxes a name, as far as a box can tell, answering as viin_iot does.
+    """A server that offers its boxes a name, as viin_iot does.
 
-    A question without a request is answered with the name `fqdn`; a request for it gets a
-    certificate `issuing` signs for its key - the one given before when the key is the same - valid
-    from the day before until CERTIFICATE_LIFE after `today()`. `answers` are given first, one per
-    question, in their order: a result, a function of the parameters that gives one, or an HTTP
-    status alone.
+    A question without a request is answered with the name `fqdn`; a request for it gets a certificate `issuing`
+    signs for its key - the one given before when the key is the same - valid from the day before until
+    CERTIFICATE_LIFE after `today()`.
+
+    `answers` are given first, one per question, in order: a result, a function of the parameters that gives one,
+    or an HTTP status alone.
     """
 
     def __init__(self, issuing, today, fqdn=FQDN, **options):
@@ -191,7 +194,10 @@ class NameServer(common.FakeServer):
         return [request['body']['params'] for request in self.requests if request['path'] == ROUTE]
 
     def requested_keys(self):
-        """The public key of the request each question carried, None for a question without one."""
+        """Read the requests of the questions.
+
+        :return: the public key of the request each question carried; ``None`` for a question without one
+        """
         return [spki(x509.load_pem_x509_csr(question['csr'].encode()).public_key()) if question.get('csr') else None
                 for question in self.questions]
 
@@ -214,7 +220,7 @@ class NameServer(common.FakeServer):
         return self._given[spki(public_key)]
 
     def certificate_for(self, public_key, names=None, valid_from=None, valid_until=None, issuing=None):
-        """The `issued` answer that carries a certificate for `public_key`."""
+        """Make the `issued` answer that carries a certificate for `public_key`."""
         issuing = issuing or self.issuing
         leaf = issue(public_key, names or [self.fqdn], valid_from or common.utc_now() - DAY,
                      valid_until or self.today() + CERTIFICATE_LIFE, issuing)
@@ -226,20 +232,29 @@ class NameServer(common.FakeServer):
         return self.certificate_for(rsa.generate_private_key(public_exponent=65537, key_size=2048).public_key())
 
     def requested_certificate(self, **changes):
-        """An answer giving a certificate for the key of the request, made with `changes` (see certificate_for)."""
+        """Make an answer that gives a certificate for the key of the request.
+
+        :param changes: the arguments of `certificate_for` that differ from the defaults
+        """
         return lambda params: self.certificate_for(
             x509.load_pem_x509_csr(params['csr'].encode()).public_key(), **changes)
 
 
 def read_as_root(path):
-    """The bytes of a file the box user may not read; None when it does not exist."""
+    """Read a file the box user may not read.
+
+    :return: the bytes of the file; ``None`` when it does not exist
+    """
     found = subprocess.run(['sudo', '-n', 'cat', '--', path], capture_output=True, check=False)
     return found.stdout if found.returncode == 0 else None
 
 
 def presented(name=None):
-    """Fingerprint of the certificate the web server of the box presents to a browser that asks by `name`,
-    or by address when None."""
+    """Read the certificate the web server of the box presents to a browser.
+
+    :param name: the name the browser asks by; ``None`` asks by address
+    :return: the fingerprint of the certificate
+    """
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.check_hostname = False
@@ -251,8 +266,10 @@ def presented(name=None):
 
 @contextlib.contextmanager
 def web_server_loads():
-    """List, for the block, each time the box has the web server load its configuration - a reload or a
-    start - with whether the web server accepted the configuration on the disk at that moment."""
+    """Record each time during the block that the box has the web server load its configuration.
+
+    :return: the list of loads, each with whether the web server accepted the configuration on the disk
+    """
     loads = []
     originals = {name: getattr(subprocess, name) for name in ('run', 'call', 'check_call')}
 
@@ -280,8 +297,7 @@ def is_web_server_load(command):
 
 @contextlib.contextmanager
 def web_server_ignoring_loads():
-    """A web server that goes on with the configuration it runs during the block: asked to load it again, it
-    says it did and changes nothing."""
+    """Make the web server say it loaded its configuration again during the block while it changes nothing."""
     run = subprocess.run
 
     def call(command, *arguments, **options):
@@ -295,7 +311,10 @@ def web_server_ignoring_loads():
 
 @contextlib.contextmanager
 def web_server_load_failing_once():
-    """The first command that would have the web server load its configuration again cannot be run."""
+    """Make the first command that has the web server load its configuration fail during the block.
+
+    :return: the list of failed commands
+    """
     run = subprocess.run
     failed = []
 
@@ -311,8 +330,7 @@ def web_server_load_failing_once():
 
 @contextlib.contextmanager
 def refused_name_template():
-    """A template of the name block that names a directive this web server does not know, as a release could
-    ship one, during the block."""
+    """Make the template of the name block name a directive the web server does not know during the block."""
     template = read_as_root(NAME_TEMPLATE)
     refused = template.replace(b'server_name @NAME@;', b'server_name @NAME@;\n    box_suite_unknown_directive on;')
     common.as_root('install', '-m', '644', '/dev/stdin', NAME_TEMPLATE, data=refused)
@@ -324,7 +342,7 @@ def refused_name_template():
 
 @contextlib.contextmanager
 def missing_name_template():
-    """No template of the name block on the box during the block, as a release that ships none leaves it."""
+    """Leave the box without a template of the name block during the block."""
     template = read_as_root(NAME_TEMPLATE)
     common.as_root('rm', '-f', NAME_TEMPLATE)
     try:
@@ -340,7 +358,11 @@ def files_holding_a_private_key():
 
 
 def pair_state(directory=NAME_PAIR):
-    """(the generation `current` names or None, the generations the directory holds, the staged link or None)."""
+    """Read the pair of the name in `directory`.
+
+    :return: the generation `current` names (``None`` when it names none), the generations the directory holds and
+        whether a staged link is there
+    """
     current = common.as_root('sh', '-c', f'readlink -- {directory}/current || true').stdout.decode().strip()
     listing = common.as_root('sh', '-c', f'ls -A -1 -- {directory} 2>/dev/null || true').stdout.decode().split()
     return (current or None, sorted(name for name in listing if name.startswith('g-')),
@@ -348,7 +370,7 @@ def pair_state(directory=NAME_PAIR):
 
 
 def key_matches_certificate(certificate_pem, key_pem):
-    """Whether the private key of `key_pem` is the key of the first certificate of `certificate_pem`."""
+    """Tell whether the private key of `key_pem` is the key of the first certificate of `certificate_pem`."""
     leaf = x509.load_pem_x509_certificate(certificate_pem)
     key = serialization.load_pem_private_key(key_pem, password=None)
     return spki(leaf.public_key()) == spki(key.public_key())
@@ -359,12 +381,15 @@ def name_blocks():
 
 
 def files_of_the_name():
-    """{path: bytes} of the certificate, the key and the web server block of the name."""
+    """Read the certificate, the key and the web server block of the name.
+
+    :return: the bytes of each file by path
+    """
     return {path: read_as_root(path) for path in (NAME_CERTIFICATE, NAME_KEY, *name_blocks())}
 
 
 def files_under_the_certificates_of_the_system_belonging_to(leaf):
-    """The files of /etc/ssl/certs that hold the certificate `leaf`, or are named for the Viindoo name."""
+    """List the files of /etc/ssl/certs that hold the certificate `leaf` or are named for the Viindoo name."""
     body = pem(leaf).splitlines()[1]
     found = common.as_root('sh', '-c', f'grep -r -l -s -F -- "{body}" /etc/ssl/certs || true; '
                                        'find /etc/ssl/certs -name "*viin*" || true').stdout.decode()
@@ -372,7 +397,7 @@ def files_under_the_certificates_of_the_system_belonging_to(leaf):
 
 
 def key_lines(data):
-    """The lines of base64 inside the private key blocks of `data`."""
+    """List the lines of base64 inside the private key blocks of `data`."""
     blocks = re.findall(rb'-----BEGIN [A-Z ]*PRIVATE KEY-----(.+?)-----END', data or b'', re.DOTALL)
     return [line.decode() for block in blocks for line in block.split() if len(line) > 40]
 
@@ -387,7 +412,10 @@ def own_certificate_files():
 
 
 def lay_out_system_files(directory):
-    """Install the system files of the layer, as a box has them; give what puts the machine back as it was."""
+    """Install the system files of the layer, as a box has them.
+
+    :return: the function that puts the machine back as it was
+    """
     saved = str(Path(directory, 'system-before.tar'))
     present = [place for place in SYSTEM_PLACES if Path('/', place).exists()]
     common.as_root('tar', '-C', '/', '-cpf', saved, *present)
@@ -444,27 +472,34 @@ class ViindooNameCase(common.BoxCase):
         common.layer('update').change_state(lambda state: state.pop('public_name', None))
 
     def service_starts(self):
-        """What the start of the box service does for the name: reconcile, then plan the first question."""
+        """Do what the start of the box service does for the name."""
         self.public_name.reconcile()
         self.public_name.begin()
         self.started = self.clock.now
 
     def at(self, after_the_start):
-        """Let the time of the box come to `after_the_start` and let the client do what is due then."""
+        """Let the time of the box come to `after_the_start` and let the client do what is due then.
+
+        :return: what the client did
+        """
         self.clock.now = self.started + after_the_start
         return self.public_name.tick()
 
     def named(self):
-        """Start the box service and let it get its name and the certificate of it; give the moment of the
-        question that brought the certificate."""
+        """Start the box service and let it get its name and the certificate of it.
+
+        :return: the moment, after the start, of the question that brought the certificate
+        """
         self.service_starts()
         self.at(FIRST_QUESTION)
         self.at(FIRST_QUESTION + FOLLOW_UP)
         return FIRST_QUESTION + FOLLOW_UP
 
     def done_in_time_while_the_web_server_ignores_loads(self, after_the_start):
-        """`at`, with a web server that keeps the configuration it runs; give whether the client was done
-        within LOOK_AT_THE_LATEST seconds."""
+        """Run `at` with a web server that keeps the configuration it runs.
+
+        :return: whether the client was done within LOOK_AT_THE_LATEST seconds
+        """
         worker = threading.Thread(target=self.at, args=(after_the_start,), daemon=True)
         with web_server_ignoring_loads():
             worker.start()
@@ -480,12 +515,12 @@ class ViindooNameCase(common.BoxCase):
         return common.layer('update').read_state()['public_name']
 
     def new_key_files(self):
-        """The files holding a private key that the box did not hold before the test."""
+        """List the files holding a private key that the box did not hold before the test."""
         return sorted(files_holding_a_private_key() - self.keys_before)
 
     @contextlib.contextmanager
     def server_that_gives_no_time(self):
-        """The server answers as before but sends no Date header."""
+        """Make the name server send no Date header during the block."""
         name = common.layer('public_name')
         post = name._post
 
@@ -505,7 +540,10 @@ class ViindooNameCase(common.BoxCase):
         return configuration.get(MANAGED_NAME, ''), configuration.get(MANAGED_NAME_SERVER, '')
 
     def presented_once_settled(self, name, expected):
-        """What the web server presents for `name`, given time to finish a reload that brings `expected`."""
+        """Read what the web server presents for `name`, once a reload that brings `expected` has finished.
+
+        :return: the fingerprint presented
+        """
         with contextlib.suppress(AssertionError):
             common.wait_until(lambda: presented(name) == expected, f'the web server to present {expected}', 10)
         return presented(name)
@@ -1082,12 +1120,18 @@ class TestInstall(ViindooNameCase):
 
 
 class TestCertificateNotTaken(ViindooNameCase):
-    """What the next question carries after a certificate could not be installed: a fault of the box keeps the
-    request, so the server answers it with the same certificate and orders nothing; a fault of the certificate
-    needs a new request."""
+    """What the next question carries after a certificate could not be installed.
+
+    A fault of the box keeps the request, so the server answers it with the same certificate and orders nothing; a
+    fault of the certificate needs a new request.
+    """
 
     def box_faults(self):
-        """{case: (context of the install question that fails, problem the line of the name gives)}."""
+        """Give the faults of the box.
+
+        :return: for each case, the context of the install question that fails and the problem the line of the name
+            gives
+        """
         trust = common.layer('trust')
         root_read = trust.read_as_root
 
@@ -1488,7 +1532,7 @@ class TestLosingTheName(ViindooNameCase):
         self.assertEqual((self.name_line()['state'], self.name_line()['reason']), ('neutral', 'disabled'))
         self.assertEqual(common.restarts, [])
 
-    def test_name_of_a_box_the_server_no_longer_knows_is_dropped_like_one_switched_off(self):
+    def test_name_of_a_box_the_server_does_not_know_is_dropped_like_one_switched_off(self):
         named_at = self.named()
         self.name_server.answers = [{'status': 'unavailable', 'reason': 'box_unknown'}]
 
@@ -1499,7 +1543,7 @@ class TestLosingTheName(ViindooNameCase):
         self.assertEqual(self.managed_name(), ('', ''))
         self.assertEqual(common.restarts, [])
 
-    def test_box_the_server_no_longer_knows_asks_again_the_next_day(self):
+    def test_box_the_server_does_not_know_asks_again_the_next_day(self):
         named_at = self.named()
         self.name_server.answers = [{'status': 'unavailable', 'reason': 'box_unknown'}]
         self.at(named_at + DAY_AT_THE_LATEST)
@@ -1511,7 +1555,7 @@ class TestLosingTheName(ViindooNameCase):
 
         self.assertEqual((before_the_day, len(self.name_server.questions)), (asked, asked + 1))
 
-    def test_request_waiting_for_its_certificate_is_removed_when_the_server_no_longer_knows_the_box(self):
+    def test_request_waiting_for_its_certificate_is_removed_when_the_server_does_not_know_the_box(self):
         self.name_server.answers = [{'status': 'name', 'fqdn': FQDN},
                                     {'status': 'pending', 'fqdn': FQDN, 'retry_after': 120},
                                     {'status': 'unavailable', 'reason': 'box_unknown'}]
@@ -1528,7 +1572,7 @@ class TestLosingTheName(ViindooNameCase):
         self.assertEqual(self.managed_name(), ('', ''))
         self.assertEqual(common.restarts, [])
 
-    def test_name_whose_check_failed_three_days_running_is_no_longer_served(self):
+    def test_name_whose_check_failed_three_days_running_is_withdrawn_until_the_check_passes(self):
         named_at = self.named()
         served = self.name_server.issued[-1]
         pair = (read_as_root(NAME_CERTIFICATE), read_as_root(NAME_KEY), pair_state())
@@ -1556,7 +1600,7 @@ class TestLosingTheName(ViindooNameCase):
         self.assertEqual(self.name_server.requested_keys()[-1], self.name_server.requested_keys()[1])
         self.assertEqual((read_as_root(NAME_CERTIFICATE), pair_state()), (pair[0], pair[2]))
 
-    def test_start_of_a_box_that_may_no_longer_hold_its_name_drops_it(self):
+    def test_start_of_a_box_that_may_not_hold_its_name_drops_it(self):
         other_server = self.server(NameServer, issuing=self.issuing, today=self.clock)
         changes = {
             'disconnected': {'token': ''},
@@ -1579,7 +1623,7 @@ class TestLosingTheName(ViindooNameCase):
                 self.assertEqual(common.restarts, [])
 
     def leave_only_an_unreadable_pair(self):
-        """Leave of the name on the box a pair whose certificate reads as none, with no record, setting or block."""
+        """Leave of the name on the box only a pair whose certificate reads as none: no record, setting or block."""
         common.as_root('sh', '-c', f'echo none > {NAME_PAIR}/$(readlink {NAME_PAIR}/current)/fullchain.pem; '
                                    f'rm -f {NAME_BLOCKS}/*.conf')
         common.store_box_configuration(**{MANAGED_NAME: '', MANAGED_NAME_SERVER: ''})

@@ -1,8 +1,8 @@
 """The places where the layer touches the box software it starts.
 
-A seam names one symbol of core, says how the layer expects it to look and what
-it puts there. A seam whose symbol moved is left alone: the box loses that one
-feature, says so in its log and in `integrity()`, and starts all the same.
+A seam names one symbol of core, says how the layer expects it to look and what it puts there. A seam whose symbol
+moved is left alone: the box loses that one feature, says so in its log and in `integrity()`, and starts all the
+same.
 """
 import functools
 import importlib
@@ -32,9 +32,9 @@ class Seam:
     number = 0      # order of application, and the name of the seam in every report
     target = ''     # the symbol, as a person would look for it in core
     feature = ''    # what the box does only while the seam holds
-    # For a seam whose symbol exists only once core has loaded its device handlers: the number, lower than its
-    # own, of the seam whose replacement applies it then, with `apply(only=...)`. The gate checks such a seam
-    # against what is on the disk and leaves it `deferred`.
+    # For a seam whose symbol exists only once core has loaded its device handlers: the number, lower than its own,
+    # of the seam whose replacement applies it then (`apply(only=...)`). The gate checks such a seam against what is
+    # on the disk and leaves it `deferred`.
     after = 0
 
     def check(self):
@@ -115,8 +115,8 @@ class FunctionSeam(Seam):
 class PartsSeam(Seam):
     """A seam made of parts that hold or move one by one.
 
-    A part that moved is left alone and the others are applied: the seam is
-    then `failed`, and its reason names the parts that are off.
+    A part that moved is left alone and the others are applied: the seam is then `failed`, and its reason names
+    the parts that are off.
     """
 
     parts = ()
@@ -166,8 +166,8 @@ _integrity = _Integrity()
 def core(module):
     """A module of core that is loaded already.
 
-    No file of the layer imports core by itself: the first import of core starts
-    it, and only the gate may decide when that happens.
+    No file of the layer imports core by itself: the first import of core starts it, and only the gate may decide
+    when that happens.
     """
     return sys.modules[f'{CORE}.{module}']
 
@@ -211,9 +211,11 @@ def _attempt(step, *arguments):
 
 
 def check():
-    """Check every declared seam and change nothing: [(seam, reason)], reason empty when the seam holds.
+    """Check every declared seam and change nothing.
 
     A seam applied by another one holds only if that one does.
+
+    :return: a list of ``(seam, reason)``; the reason is empty when the seam holds
     """
     results, reasons = [], {}
     for seam in _declared():
@@ -237,10 +239,9 @@ def _fail(seam, error):
 def apply(only=None):
     """Check each seam, in the order of their numbers, and apply those that hold; an applied seam is left alone.
 
-    Without `only`, the call of the gate, a seam that names another in `after`
-    is checked and left `deferred`. `only` gives the numbers of the seams to
-    apply now: those another module of the layer declares once the box has
-    started, and the deferred ones when their symbol exists.
+    :param only: the numbers of the seams to apply: those another module of the layer declares once the box has
+        started, and the deferred ones when their symbol exists. Without it, as the gate calls it, a seam that
+        names another in `after` is checked and left `deferred`.
     """
     for seam in _declared():
         if _integrity.states[seam.number][0] == APPLIED or (only is not None and seam.number not in only):
@@ -290,11 +291,11 @@ def mark_in_place():
 def integrity():
     """The state of the layer, for whoever shows it to a person.
 
-    {'ok', 'load_order_ok', 'seams': [{'number', 'target', 'feature', 'state', 'reason'}],
-    'problems': [{'source', 'message'}]}; `state` is pending, applied, deferred
-    (it holds, and another seam applies it once core has loaded its device
-    handlers), failed or skipped. 'ok' asks for a gate that ran to its end, no
-    problem, and every seam applied or deferred.
+    :return: ``{'ok', 'load_order_ok', 'seams': [{'number', 'target', 'feature', 'state', 'reason'}],
+        'problems': [{'source', 'message'}]}``; `state` is pending, applied, deferred (it holds, and another seam
+        applies it once core has loaded its device handlers), failed or skipped, and ``ok`` asks for a gate that
+        ran to its end, no problem, and every seam applied or deferred
+    :rtype: dict
     """
     seams = [{
         'number': seam.number,

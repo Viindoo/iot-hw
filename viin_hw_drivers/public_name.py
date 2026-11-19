@@ -111,22 +111,13 @@ UNREACHABLE = 'unreachable'
 # Answers that bring the box nearer a name, or say for good that it gets none: they are no failure of a renewal.
 NOT_FAILURES = (('name', ''), ('pending', ''), ('unavailable', 'disabled'), ('unavailable', 'box_unknown'),
                 ('unavailable', 'no_provider'), ('unavailable', 'not_offered'))
-# Answers that take the name from the box: the server no longer gives it one, or no longer knows the box's token
-# (the record was deleted or replacement hardware took it), so the name it held is not the box's any more.
+# Answers that take the name from the box: the server gives it none, or does not know the box's token (the record
+# was deleted or replacement hardware took it), so the name it held is not the box's.
 NAME_LOST = (('unavailable', 'disabled'), ('unavailable', 'box_unknown'))
 
-# The reasons `_install` gives for a certificate the box cannot take, that are the certificate's own, or the
-# request's: no certificate answering that request can be taken, so only a new request leads on.
-#   invalid_certificate, key_mismatch, name_mismatch: the certificate.
-#   not_yet_valid, expired: the certificate, because the server's time confirmed it is outside its dates.
-#   key_missing: the key of the request is gone from the card, so its certificate can never be used.
-# Every other reason - box_clock_wrong, validity_unconfirmed, untrusted, not_written, not_readable,
-# web_server_refused, no_site_template, and any the box may give later - is the box's: a new request would only
-# spend one of the name's weekly orders. Two of them need a word:
-#   validity_unconfirmed: the dates look wrong but the server gave no time, so the box cannot tell its clock from
-#     the certificate.
-#   untrusted: the certificate does not lead to the authorities the box carries. Usually that list is out of date
-#     in the box, and the next certificate would carry the same chain.
+# The reasons of `_install` that are the certificate's or its request's own: no certificate answering that request
+# can be taken, so only a new request leads on. Any other reason is the box's, and a new request would only
+# spend one of the name's weekly orders.
 CERTIFICATE_FAULTS = frozenset({
     'invalid_certificate', 'key_mismatch', 'name_mismatch', 'not_yet_valid', 'expired', 'key_missing',
 })
@@ -156,9 +147,11 @@ _errors = []
 
 
 class _Problem(Exception):
-    """A certificate the box does not take; `reason` is the key the self-test shows for it.
+    """A certificate the box does not take.
 
-    `reload_tried`: the web server was asked to read its configuration, so it may hold what was being installed.
+    :param reason: the key the self-test shows for it
+    :param reload_tried: whether the web server was asked to read its configuration, so it may hold what was being
+        installed
     """
 
     def __init__(self, reason, reload_tried=False):
@@ -166,8 +159,6 @@ class _Problem(Exception):
         self.reason = reason
         self.reload_tried = reload_tried
 
-
-# ------------------------------------------------------------------------------------------- boundaries
 
 def _now():
     """Now, as the naive UTC time certificates carry their dates in."""
@@ -183,14 +174,19 @@ def _helpers():
 
 
 def _address():
-    """The address of the box on the site's network, as its server is told it; None without a network."""
+    """The address of the box on the site's network, as its server is told it.
+
+    :return: the address; ``None`` without a network
+    """
     return _helpers().get_ip()
 
 
 def _post(url, body):
-    """POST `body` to the server of the box: (HTTP status, at most MAX_ANSWER + 1 bytes of answer, its Date header).
+    """POST `body` to the server of the box.
 
-    Raises OSError or urllib3's HTTPError when no answer came.
+    :return: ``(HTTP status, at most MAX_ANSWER + 1 bytes of answer, its Date header)``
+    :raises OSError: when no answer came
+    :raises urllib3.exceptions.HTTPError: likewise
     """
     pool = trust.pool_manager(timeout=urllib3.Timeout(total=TIMEOUT), retries=False)
     try:
@@ -207,7 +203,10 @@ def _post(url, body):
 
 
 def _resolve(fqdn):
-    """The IPv4 addresses the site's resolver gives for `fqdn`. Raises OSError when it gives none."""
+    """The IPv4 addresses the site's resolver gives for `fqdn`.
+
+    :raises OSError: when it gives none
+    """
     found = socket.getaddrinfo(fqdn, 443, socket.AF_INET, socket.SOCK_STREAM)
     return sorted({entry[4][0] for entry in found})
 
@@ -217,12 +216,14 @@ def _fingerprint_of(der):
 
 
 def _say_hello(fqdn, address):
-    """(fingerprint of the certificate presented, what the box answers itself) at https://`fqdn`/hw_proxy/hello,
-    reached at `address`.
+    """Ask the box, at `address`, for https://`fqdn`/hw_proxy/hello.
 
-    The certificate is verified against the public authorities only, as a
-    browser of the site does. Raises ssl.SSLCertVerificationError when it is
-    refused, OSError or http.client.HTTPException when no answer came.
+    The certificate is verified against the public authorities only, as a browser of the site does.
+
+    :return: ``(fingerprint of the certificate presented, what the box answers itself)``
+    :raises ssl.SSLCertVerificationError: when the certificate is refused
+    :raises OSError: when no answer came
+    :raises http.client.HTTPException: likewise
     """
     context = ssl.create_default_context(cafile=trust.PUBLIC_AUTHORITIES)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -245,7 +246,9 @@ def _say_hello(fqdn, address):
 def _presented(fqdn, timeout):
     """Fingerprint of the certificate the web server of the box presents to a browser asking for `fqdn`.
 
-    Read without verifying it and without sending a request. Raises OSError when the web server does not answer.
+    Read without verifying it and without sending a request.
+
+    :raises OSError: when the web server does not answer
     """
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -261,9 +264,10 @@ def _exists(path):
 
 
 def _read_system_file(path):
-    """The bytes of a file, read as root when the box user may not; None when it does not exist.
+    """The bytes of a file, read as root when the box user may not.
 
-    Raises trust.Unreadable when it could not be read: a file that may be there is never taken for none.
+    :return: the bytes; ``None`` when the file does not exist
+    :raises trust.Unreadable: when it could not be read: a file that may be there is never taken for none
     """
     try:
         return Path(path).read_bytes()
@@ -296,8 +300,6 @@ def _reload_web_server():
     trust.serve_new_certificate()
 
 
-# ------------------------------------------------------------------------------------------- keys and certificates
-
 def _spki(public_key):
     return public_key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
 
@@ -309,7 +311,10 @@ def acceptable_name(fqdn):
 
 
 def _private_key(data):
-    """The private key a file of the name holds, or None; the whole file is the key."""
+    """The private key a file of the name holds; the whole file is the key.
+
+    :return: the key; ``None`` when the file holds none
+    """
     try:
         return serialization.load_pem_private_key(data or b'', password=None)
     except (ValueError, TypeError, UnsupportedAlgorithm):
@@ -346,7 +351,11 @@ def _pem(request):
 
 
 def _pending_request():
-    """The request waiting for its certificate, or None; raises trust.Unreadable when the file could not be read."""
+    """The request waiting for its certificate.
+
+    :return: the request; ``None`` when none waits
+    :raises trust.Unreadable: when the file could not be read
+    """
     data = _read_system_file(PENDING_REQUEST_FILES[0])
     try:
         return x509.load_pem_x509_csr(data)
@@ -382,8 +391,11 @@ def _chain_verifies(leaf, chain, moment):
 
 
 def _judge(certificates, request, fqdn, server_time):
-    """Raise _Problem unless the first of `certificates` carries the key of `request`, names `fqdn`, is valid now,
-    and leads to the public authorities."""
+    """Check that the first of `certificates` carries the key of `request`, names `fqdn`, is valid and leads to the
+    public authorities.
+
+    :raises _Problem: when it does not
+    """
     if not certificates:
         raise _Problem('invalid_certificate')
     leaf = certificates[0]
@@ -413,8 +425,10 @@ def _describe(certificate, fqdn, served):
 
 
 def _load_held():
-    """Read what the files of the name hold into `_held`; raises trust.Unreadable, changing nothing, when they
-    could not be read."""
+    """Read what the files of the name hold into `_held`.
+
+    :raises trust.Unreadable: when they could not be read; nothing is changed
+    """
     global _pair_may_exist, _held_read
     chain = _read_system_file(NAME_CERTIFICATE_FILE)
     _held.clear()
@@ -441,8 +455,6 @@ def _ended(text, now):
         return False
 
 
-# ------------------------------------------------------------------------------------------- serving the name
-
 def _site(fqdn):
     """The web server block of `fqdn`: the template, its directives naming `fqdn`; its comments are left as they are."""
     lines = (_read_system_file(SITE_TEMPLATE) or b'').decode(errors='replace').splitlines(keepends=True)
@@ -455,7 +467,7 @@ def _site(fqdn):
 def _unserve():
     """Remove the web server block of the name; the web server forgets it when what remains is accepted.
 
-    The address is reported again first: browsers are never sent to a name the box no longer serves.
+    The address is reported again first, so that browsers are never sent to a name the box does not serve.
     """
     _clear_managed_name()
     if not _exists(SITE_FILES[0]):
@@ -484,10 +496,11 @@ def _await_presentation(fqdn):
 def _serve(fqdn):
     """Give `fqdn` its web server block, have the web server read it, and let it present the certificate held.
 
-    Raises _Problem when the block cannot be written or the web server refuses
-    the configuration or cannot be made to read it; the caller puts back what
-    the block was. A web server still presenting another certificate once
-    PRESENTATION_WAIT is over is left for the self-check to find.
+    A web server still presenting another certificate once PRESENTATION_WAIT is over is left for the self-check to
+    find.
+
+    :raises _Problem: when the block cannot be written or the web server refuses the configuration or cannot be
+        made to read it; the caller puts back what the block was
     """
     try:
         _write_system_files(SITE_FILES, _site(fqdn), '644')
@@ -504,9 +517,10 @@ def _serve(fqdn):
 
 
 def _block_before():
-    """The web server block of the name as bytes, None when the box has none.
+    """The web server block of the name.
 
-    Raises _Problem when it exists but cannot be read: it could not be put back.
+    :return: the bytes; ``None`` when the box has none
+    :raises _Problem: when it exists but cannot be read, so that it could not be put back
     """
     if not _exists(SITE_FILES[0]):
         return None
@@ -517,12 +531,10 @@ def _block_before():
 
 
 def _put_back(previous, block, reload_tried):
-    """Leave the name as `_install` found it - `current` on `previous` generation, the block as it was - and the
+    """Leave the name as `_install` found it - `current` on the `previous` generation, the block as it was - and the
     web server on a configuration it accepts.
 
-    The web server reads its configuration again only when an install asked it
-    to, and only when it accepts what is then on the disk; when it does not, the
-    block of the name goes.
+    When the web server does not accept what is on the disk, the block of the name goes.
     """
     try:
         trust.restore_pair(NAME_PAIR_DIRECTORIES, previous)
@@ -544,10 +556,12 @@ def _put_back(previous, block, reload_tried):
 
 
 def _install(answer, request, key_files, server_time):
-    """Install the certificate of an `issued` answer to `request`, whose key is in `key_files`; raise _Problem.
+    """Install the certificate of an `issued` answer to `request`, whose key is in `key_files`.
 
     Whatever step fails, the box is left as it was: the certificate it held
     before still on the disk and, if it was served, still served.
+
+    :raises _Problem: when the certificate cannot be taken
     """
     fqdn = _requested_name(request)
     certificates = trust.load_certificates(answer['certificate'].encode())
@@ -615,8 +629,6 @@ def _drop(files=True):
         _plan.update(check_at=None, check_retries=0)
 
 
-# ------------------------------------------------------------------------------------------- self-check
-
 def _resolution(fqdn, address):
     try:
         found = _resolve(fqdn)
@@ -673,10 +685,11 @@ def _check(now):
         _plan['check_at'] = now + datetime.timedelta(seconds=CHECK_RETRY)
 
 
-# ------------------------------------------------------------------------------------------- the question
-
 def _request_to_send(now):
-    """(request, files of its key) the next question carries, or None to ask for a name only."""
+    """The request the next question carries.
+
+    :return: ``(request, files of its key)``; ``None`` to ask for a name only
+    """
     fqdn = _record['fqdn']
     if not acceptable_name(fqdn):
         return None
@@ -707,7 +720,10 @@ def _server_time(value):
 
 
 def _read_answer(status, data):
-    """The answer of the server as the box takes it: {'status', 'reason', ...}."""
+    """The answer of the server as the box takes it.
+
+    :return: a dict with ``status`` and ``reason``, and the keys that `ANSWERS` allows for that status
+    """
     if status == 404:
         # A server without the route offers no name, as one without a provider says it.
         return {'status': 'unavailable', 'reason': 'no_provider'}
@@ -736,7 +752,10 @@ def _read_answer(status, data):
 
 
 def _ask(server, address, now):
-    """Ask the server: (its answer, the request the question carried or None, the server's clock or None)."""
+    """Ask the server.
+
+    :return: ``(its answer, the request the question carried or None, the server's clock or None)``
+    """
     request = _request_to_send(now)
     params = {'token': _helpers().get_token(), 'protocol': PROTOCOL}
     if address:
@@ -756,7 +775,7 @@ def _ask(server, address, now):
 
 
 def _wait_after(answer):
-    """Seconds until the next question after `answer`."""
+    """The seconds until the next question after `answer`."""
     status, reason = answer['status'], answer['reason']
     if status == UNREACHABLE or (status, reason) == ('unavailable', 'provider_unreachable'):
         return UNREACHABLE_WAIT
@@ -768,10 +787,12 @@ def _wait_after(answer):
 
 
 def _take_certificate(answer, request, server_time, now):
-    """Install, or confirm, the certificate of an `issued` answer; return whether that failed.
+    """Install, or confirm, the certificate of an `issued` answer.
 
     A failure that is the certificate's makes the next question carry a new request; one that is the box's does
     not: the same request is answered with the same certificate again, and no new one is ordered.
+
+    :return: whether that failed
     """
     certificates = trust.load_certificates(answer['certificate'].encode())
     if _held and certificates and trust.fingerprint(certificates[0]) == _held['fingerprint']:
@@ -797,7 +818,10 @@ def _take_certificate(answer, request, server_time, now):
 
 
 def _take(answer, request, server_time, now):
-    """Act on `answer` to a question that carried `request`; return seconds until the next question."""
+    """Act on `answer` to a question that carried `request`.
+
+    :return: the seconds until the next question
+    """
     status, reason = answer['status'], answer['reason']
     if (status, reason) == ('refused', 'too_soon'):
         # Nothing the box shows changes: the same pending request is sent once the minute's floor is over.
@@ -814,7 +838,7 @@ def _take(answer, request, server_time, now):
         _drop()
         _record.update(fqdn='', not_after='', check='', failing_since='')
     elif status in ('name', 'pending') and asked_for and fqdn != asked_for:
-        # The name the request was made for is no longer this box's: the next request names the new one.
+        # The request was made for a name that is not the box's: the next request names the box's.
         _drop()
         _record.update(fqdn=fqdn, not_after='', check='', failing_since='')
         failed, wait = False, FOLLOW_UP
@@ -858,8 +882,6 @@ def _question(server, now):
     _plan['question_at'] = now + datetime.timedelta(seconds=wait)
 
 
-# ------------------------------------------------------------------------------------------- record and log
-
 def _save():
     def change(state):
         state[RECORD_KEY] = dict(_record)
@@ -880,8 +902,10 @@ def _tell():
 
 
 def _warn_once(error):
-    """Log a failure of the client unless the last one was of the same kind; never its message, which may quote
-    what was being written."""
+    """Log a failure of the client unless the last one was of the same kind.
+
+    The message of the error is never logged: it may quote what was being written.
+    """
     kind = type(error).__name__ if error else ''
     if _errors != [kind]:
         _errors[:] = [kind]
@@ -910,7 +934,10 @@ def _forget():
 
 
 def _situation():
-    """(whether the box may hold a name from its server, the address of that server)."""
+    """Whether the box may hold a name from its server.
+
+    :return: ``(allowed, the address of that server)``
+    """
     helpers = _helpers()
     server = (helpers.get_conf(trust.SERVER_KEY) or '').strip().rstrip('/')
     own = (helpers.get_conf(trust.BOX_ADDRESS_KEY) or '').strip()
@@ -919,11 +946,12 @@ def _situation():
     return allowed, server
 
 
-# ------------------------------------------------------------------------------------------- the client
-
 def reconcile():
     """At each start, keep the name only if the box is paired with the server it got it from and has no name the
-    installer typed for it; otherwise drop it and report the address. Never raises."""
+    installer typed for it; otherwise drop it and report the address.
+
+    A failure is logged, never raised.
+    """
     with _lock:
         try:
             _read_record()
@@ -957,7 +985,9 @@ def begin():
 def tick():
     """Do what is due: lose an ended name, ask when the time or a new address says so, check the name.
 
-    Returns the seconds after which the next look is due. Never raises.
+    A failure is logged, never raised.
+
+    :return: the seconds after which the next look is due
     """
     with _lock:
         now = _now()
@@ -987,7 +1017,7 @@ def _tick(now):
         # The files of the name could not be read at the start: no question carries a new key before they are.
         _load_held()
     if _plan['question_at'] is None or (_plan['question_at'] - now).total_seconds() > NO_PROVIDER_WAIT + JITTER:
-        # The box was not allowed a name until now, or its clock went back far.
+        # The box was not allowed a name before, or its clock went back far.
         _plan['question_at'] = now + datetime.timedelta(seconds=FIRST_QUESTION)
     if _held and _held['not_after'] <= now:
         _drop()

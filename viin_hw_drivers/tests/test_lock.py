@@ -150,13 +150,19 @@ _device_classes = []
 
 
 def shell_password():
-    """The record of the password of the box user, as the system keeps it."""
+    """Read the password record of the box user.
+
+    :return: the shadow entry of the box user
+    """
     return common.as_root('getent', 'shadow', common.BOX_USER).stdout
 
 
 def joining(network, host_name=None):
-    """What the Wi-Fi route answers once it started to join `network`: how a browser opens the box, by the host name of
-    the box in lower case (the one of this machine when left out), and never its server."""
+    """Give the answer of the Wi-Fi route once it started to join `network`.
+
+    :param host_name: the host name of the box; the one of this machine when left out
+    :return: the answer: how a browser opens the box, by its lower-case host name, and never its server
+    """
     host = (host_name or socket.gethostname()).lower()
     return {
         'status': 'success',
@@ -199,10 +205,10 @@ class SetClock:
 
 
 def plug_device(case):
-    """Plug a device into the box started in this process until the test `case` ends, and return it.
+    """Plug a device into the box started in this process until the test `case` ends.
 
-    It is a device as core holds them. It takes what core's keyboard, scale and printer devices
-    are asked for, and `asked` lists the actions it ran.
+    :return: a device as core holds them; it takes what core's keyboard, scale and printer devices are asked for,
+        and its `asked` lists the actions it ran
     """
     main = common.core('main')
     if not _device_classes:
@@ -229,9 +235,9 @@ def plug_device(case):
 def plug_screen(case):
     """Plug a screen into the box started in this process until the test `case` ends, as the only screen it has.
 
-    Core drives it as it drives the screen of a box, but for the programs the software box lacks:
-    the browser is listed instead of started. Returns that list, one entry per start: the
-    arguments of the browser, the address it opens first.
+    The browsers the software box lacks are listed instead of started.
+
+    :return: the list of browser starts, one entry per start: the arguments of the browser, the address it opens first
     """
     main = common.core('main')
     case.enterContext(common.without_running(*SCREEN_TOOLS))
@@ -248,7 +254,10 @@ def plug_screen(case):
 
 
 def kept_address():
-    """The address the box keeps for its screen, which the screen opens when the box starts; None when it keeps none."""
+    """Read the address the box keeps for its screen.
+
+    :return: the address the screen opens when the box starts; ``None`` when the box keeps none
+    """
     return common.box_configuration().get(KEPT_ADDRESS)
 
 
@@ -303,7 +312,7 @@ class LockedBoxCase(common.BoxCase):
         self.kept = common.kept()
 
     def assertRefused(self, response):
-        """`response` is the answer of a route of core that takes no JSON: the box refuses it as locked."""
+        """Assert that the box refused `response`, the answer of a route of core that takes no JSON, as locked."""
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.get_json().get('reason'), LOCKED)
 
@@ -472,7 +481,10 @@ class TestJoiningAWifiOnAPairedBox(LockedBoxCase):
         self.network = wifi_common.network_manager(self)
 
     def join(self, **parameters):
-        """(answer of the route, the joins NetworkManager was asked for) for a box named `suite-box`."""
+        """Ask the Wi-Fi route to join a network, for a box named `suite-box`.
+
+        :return: the answer of the route and the joins NetworkManager was asked for
+        """
         joins = len(self.network.joined())
         with common.named('suite-box'), wifi_common.settled():
             answer = self.call(WIFI, proof=self.proof, **parameters)
@@ -518,7 +530,7 @@ class TestUnlockProof(common.BoxCase):
         self.box_with_server(VECTOR_CREDENTIAL)
 
     def unlocks(self, proof):
-        """Whether a request that carries `proof` may change a setting; asked of the restart of the box service."""
+        """Tell whether a request that carries `proof` may change a setting."""
         return self.request(RESTART, proof=proof).status_code == 200
 
     def test_proof_made_for_another_box_never_unlocks(self):
@@ -541,7 +553,7 @@ class TestUnlockProof(common.BoxCase):
 
             self.assertTrue(self.unlocks(proof))
 
-    def test_proof_no_longer_unlocks_once_15_minutes_have_passed(self):
+    def test_proof_does_not_unlock_once_15_minutes_have_passed(self):
         clock = SetClock(EARLY_IN_ITS_SECOND)
         with mock.patch.object(common.layer('lock'), 'time', clock):
             _answer, proof = self.unlock(VECTOR_SETTINGS_CODE)
@@ -557,7 +569,10 @@ class DeviceCase(LockedBoxCase):
         self.device = plug_device(self)
 
     def ask_device(self, proof=None, **action):
-        """What the box answers a page that asks the device for `action`, the way the pages of a server do."""
+        """Ask the device for `action`, the way the pages of a server do.
+
+        :return: the answer of the box
+        """
         return self.call(ACTION, proof=proof, session_id=SESSION, device_identifier=DEVICE, data=json.dumps(action))
 
 
@@ -617,7 +632,7 @@ class TestDeviceUseWithoutTheUnlockProof(DeviceCase):
 class Screen:
     """What a box case gains with a screen; a test class names it before its box case.
 
-    `with_proof` says whether the pages that ask the screen send the unlock proof of the case.
+    A class sets `with_proof` when the pages that ask the screen send the unlock proof of the case.
     """
     with_proof = False
 
@@ -626,7 +641,10 @@ class Screen:
         self.started = plug_screen(self)
 
     def ask_screen(self, *address, proof=None):
-        """What the box answers a page that asks the screen to show an address or, given none, its page again."""
+        """Ask the screen to show an address or, given none, its page again.
+
+        :return: the answer of the box
+        """
         action = {'action': 'update_url'}
         if address:
             action['url'] = address[0]
@@ -635,11 +653,14 @@ class Screen:
         return self.call(ACTION, proof=proof, session_id=SESSION, device_identifier=SCREEN, data=json.dumps(action))
 
     def shown(self):
-        """The addresses the browser of the screen was started with since the screen was plugged, in order."""
+        """Read the browser starts of the screen.
+
+        :return: the addresses the browser was started with since the screen was plugged, in order
+        """
         return [arguments[0] for arguments in self.started]
 
     def assertNotShown(self, answer):
-        """The box refused, by `answer`, what the screen was last asked: no browser started, the kept address stays."""
+        """Assert that `answer` refuses what the screen was last asked: no browser started, the kept address stays."""
         self.assertIsInstance(answer, dict, answer)
         self.assertEqual((self.shown(), kept_address()), self.before_the_ask)
 
@@ -704,8 +725,8 @@ class AddressesTheScreenShowsForNoRequestWithoutTheUnlockProof:
         )
 
     def test_name_of_the_box_that_a_browser_reads_as_an_address_does_not_pass_for_the_box(self):
-        with common.named('3232235777'):
-            answer = self.ask_screen('http://3232235777:8069/point_of_sale/display')
+        with common.named('3221225985'):
+            answer = self.ask_screen('http://3221225985:8069/point_of_sale/display')
 
         self.assertNotShown(answer)
 
@@ -805,7 +826,10 @@ class TestScreenOfABoxWithoutAServer(
         common.BoxCase):
 
     def leave_a_server(self):
-        """Give the box a server, then disconnect it: (that server, the unlock proof the box gave meanwhile)."""
+        """Give the box a server, then disconnect it.
+
+        :return: that server and the unlock proof the box gave meanwhile
+        """
         server = self.box_with_server(VECTOR_CREDENTIAL)
         _answer, proof = self.unlock(VECTOR_SETTINGS_CODE)
         self.request(DISCONNECT, proof=proof)
@@ -867,9 +891,7 @@ class TestBoxWithoutAServer(common.BoxCase):
 
 class Settings:
     """What a box case gains to ask each setting of the box as the browsers of its site do; a test class names it
-    before its box case.
-
-    A box that has a server is asked with its unlock proof, so that its lock refuses nothing.
+    before its box case. A box that has a server is asked with its unlock proof, so that its lock refuses nothing.
     """
     proof = None
 
@@ -882,7 +904,10 @@ class Settings:
         return self.request(path, proof=self.proof, sent=sent, box=BOX)
 
     def post(self, path, sent, **parameters):
-        """(the result of a JSON route, its response)."""
+        """Ask a JSON route of the box.
+
+        :return: the result of the route and its response
+        """
         response = self.request(path, parameters, proof=self.proof, sent=sent, box=BOX)
         return response.get_json().get('result'), response
 
@@ -1193,7 +1218,10 @@ class TestSettingsAskedThroughTheWebServerOfTheBox(common.BoxCase):
     """The web server of the box hands a request on under an address of its own, not the one the browser called."""
 
     def set_wifi(self, sent):
-        """Ask the box, through its web server, to join a Wi-Fi network: (its answer, the NetworkManager it asked)."""
+        """Ask the box, through its web server, to join a Wi-Fi network.
+
+        :return: the answer of the box and the NetworkManager it asked
+        """
         common.serve()
         network = wifi_common.network_manager(self)
         network.change(networks={'Workshop': 'not-a-real-password'})
@@ -1269,6 +1297,16 @@ class TestOtherWebSites(common.BoxCase):
 
         self.assertEqual(response.get_data(as_text=True), 'ping')
         self.assertReadable(response)
+
+    def test_liveness_check_of_the_point_of_sale_is_answered_with_the_header_that_lets_its_page_read_it(self):
+        for case, headers in {'page of another web site': from_another_web_site(), 'no page': {}}.items():
+            with self.subTest(case):
+                response = self.client.get('/hw_proxy/hello', headers=headers)
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.get_data(as_text=True), 'ping')
+                if headers:
+                    self.assertReadable(response)
 
     def test_page_of_another_web_site_uses_a_device(self):
         device = plug_device(self)

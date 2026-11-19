@@ -7,29 +7,26 @@ of the box process, programs that answer as those of a box do for the Wi-Fi: `nm
 owned by root. The stand-in lists each call it answers, keeps the profiles it made as files,
 and joins a network only with the very name and password a network around it has.
 
-It answers as nmcli 1.42 and NetworkManager 1.42 do. nmcli lists the access points of a scan,
-and the value it gives with `-g`, in its terse form: a backslash before each colon and each backslash. It
-takes the value of a setting given to `connection add` as it is, whatever it begins with, and
-an argument of `connection up` that begins like one of its own options (`--ask`, `-s`) for that
-option. It reads a password from the file given to `connection up` as `passwd-file`, one
-`<setting>:<value>` line each, the value with its backslash escapes undone and the spaces at
-either end that no backslash escapes dropped; NetworkManager then saves it in the profile. A
-join asked by `connection up` reaches a network no access point announces too: NetworkManager
-asks for it by its name. NetworkManager joins a profile by itself (`join_by_itself`) only when
-an access point announces its network, or when the profile says the network is hidden; it
-stops doing so once a handshake failed, until a `connection up` asks for the profile again.
+It answers as nmcli 1.42 and NetworkManager 1.42 do: terse output with escaped colons and
+backslashes, the settings of `connection add` taken as given, an argument of `connection up` that
+looks like an option of nmcli read as that option, a password read from the `passwd-file` of
+`connection up`. A join asked by `connection up` reaches a network no access point announces too.
+NetworkManager joins a profile by itself (`join_by_itself`) only when an access point announces its
+network or the profile says the network is hidden, and stops once a handshake failed, until a
+`connection up` asks for the profile again.
 
-For `viin-box-wifi`, which runs as root, it answers `iw` as iw 5.19 does: who is connected to
-the access point (`station dump`), and the access points a scan hears, each name as iw spells
-it; a scan that asks for a name hears a hidden network of that name too. It answers core's
-access point script as that script does: the access point starts when the box has no address.
-`WatchOfTheBox` drives `viin-box-wifi watch` look by look, at the times a test gives, with the
-log in which the web server of a box notes each request it answers.
+A join whose key the access point refuses ends in one of two ways: nmcli prints the lack of secrets,
+or - with `nmcli_timeout` - prints only that its wait expired, while the supplicant of the radio logs
+the refusal in the journal (`journal`).
 
-nmcli writes what it prints in the character set of its locale, each character that set lacks
-as `?`: it sets its locale from its environment as the C library does, and a locale the system
-does not have leaves it in ASCII. The stand-in asks the C library of the box which locales it
-has, and `with_settings_naming_a_locale_the_box_lacks` gives the box such settings.
+For `viin-box-wifi`, which runs as root, it answers `iw` as iw 5.19 does (who is connected to the
+access point, the access points a scan hears) and core's access point script as that script does: the
+access point starts when the box has no address. `WatchOfTheBox` drives `viin-box-wifi watch` look by
+look, at the times a test gives.
+
+nmcli writes in the character set of its locale, `?` for each character that set lacks;
+`with_settings_naming_a_locale_the_box_lacks` gives the box settings that name a locale the system
+does not have.
 
 `settled` waits, at the end of its block, for every thread and every program the box started
 during the block: a join runs after the route has answered.
@@ -55,8 +52,10 @@ import services_common as box
 # The address of the access point of the box on its radio, as core's access point script gives it.
 ACCESS_POINT_ADDRESS = '10.11.12.1/24'
 RADIO = 'wlan0'
+# What the supplicant of the radio logs when the access point refused the key.
+REFUSED_KEY_LINE = 'wlan0: WPA: 4-way Handshake failed - pre-shared key may be incorrect'
 # The programs the stand-in answers for, and those it runs for real when it does not.
-PROGRAMS = ('sudo', 'nmcli', 'ip', 'hostname', 'rfkill', 'iw', 'service', 'wireless_ap.sh')
+PROGRAMS = ('sudo', 'nmcli', 'ip', 'hostname', 'rfkill', 'iw', 'service', 'wireless_ap.sh', 'journalctl')
 REAL_PROGRAMS = ('sudo', 'ip', 'hostname', 'service')
 # The program of the box that joins the network it keeps as it starts and, given `watch`, brings the box back to it.
 WIFI_PROGRAM = box.SYSTEM_FILES / 'usr' / 'local' / 'sbin' / 'viin-box-wifi'
@@ -85,6 +84,7 @@ NOT_FOUND = 10
 NOT_JOINED = 4
 INVALID_ARGUMENTS = 2
 NOT_RUNNING = 8
+TIMED_OUT = 3
 # The options nmcli takes wherever it reads an argument through its own parser.
 OPTIONS = ('ask', 'show-secrets')
 # What a profile holds of each setting `connection add` and `connection modify` take, by every name nmcli knows.
@@ -115,6 +115,27 @@ def change(**values):
 def note(command):
     with (STATE / 'calls').open('a', encoding='utf-8') as calls:
         calls.write(json.dumps([time.time(), command]) + '\n')
+
+
+def addresses():
+    """What `hostname -I` lists: the addresses the world gives, and one on the radio while it holds a network."""
+    found = world()['addresses'].split()
+    return [*found, world()['wifi_address']] if world()['active'] is not None and world()['wifi_address'] else found
+
+
+def note_in_journal(text):
+    """The supplicant of the radio logs `text` now."""
+    change(journal=[*world()['journal'], {'at': time.time(), 'text': text}])
+
+
+def journalctl(arguments):
+    """The journal between `--since @<seconds>` and `--until @<seconds>`, one text a line."""
+    moments = {name: float(arguments[place + 1].lstrip('@')) for place, name in enumerate(arguments)
+               if name in ('--since', '--until')}
+    for entry in world()['journal']:
+        if moments.get('--since', 0) <= entry['at'] <= moments.get('--until', float('inf')):
+            print(entry['text'])
+    return 0
 
 
 def record_join(**fields):
@@ -321,7 +342,7 @@ def connection_up(words, asked_by_the_page):
         if through[0]['ssid'] != profile['ssid']:
             return NOT_JOINED
         bssid = through[0]['bssid']
-    # Asked by a person: whatever NetworkManager blocked for the profile no longer holds.
+    # A request by a person clears what NetworkManager blocked for the profile.
     profile.pop('blocked', None)
     setting = SECRET.get(profile.get('key_mgmt'))
     if setting and 'psk' not in profile and setting in given:
@@ -332,8 +353,17 @@ def connection_up(words, asked_by_the_page):
         deadline = time.monotonic() + 60
         while not (STATE / 'released').exists() and time.monotonic() < deadline:
             time.sleep(0.02)
+    if world()['logged_while_joining']:
+        note_in_journal(world()['logged_while_joining'])
     if not joinable(profile):
-        print(f'Error: Connection activation failed: {why_not_joined(profile)}', file=sys.stderr)
+        reason = why_not_joined(profile)
+        if world()['nmcli_timeout']:
+            # NetworkManager asks for the key again until the wait ends: nmcli names no reason, the supplicant does.
+            if reason.startswith('(7)'):
+                note_in_journal(SETUP['refused_key_line'])
+            print('Error: Timeout 45 sec expired.', file=sys.stderr)
+            return TIMED_OUT
+        print(f'Error: Connection activation failed: {reason}', file=sys.stderr)
         return NOT_JOINED
     change(active=profile['id'], active_ssid=profile['ssid'], active_bssid=bssid)
     return 0
@@ -358,9 +388,8 @@ def join_by_itself():
 
 
 def in_the_character_set_of_the_locale():
-    """Write as nmcli does: it calls setlocale(LC_ALL, "") and prints through GLib, which writes `?` for each
-    character the character set of the locale lacks. The C library falls back to ASCII when the environment names a
-    locale the system does not have."""
+    """Write as nmcli does: `?` for each character the character set of the locale lacks, ASCII when the
+    environment names a locale the system does not have."""
     try:
         locale.setlocale(locale.LC_ALL, '')
         utf_8 = locale.nl_langinfo(locale.CODESET) == 'UTF-8'
@@ -495,7 +524,7 @@ def record_restart(what):
 def access_point_script():
     """Core's script: the access point starts when the box has no address; it restarts the box service either way."""
     record_restart('access point script')
-    if not world()['addresses'].split():
+    if not addresses():
         # The profiles NetworkManager may join by itself, and so take the radio from the access point.
         taking = [profile['id'] for _path, profile in profiles() if profile.get('autoconnect')
                   and not profile.get('blocked')]
@@ -520,6 +549,8 @@ def as_root(arguments):
         return 0
     if program == SETUP['access_point_script']:
         return access_point_script()
+    if program == 'journalctl':
+        return journalctl(arguments[1:])
     if program in world()['failing']:
         return 1
     real('sudo', sys.argv[1:])
@@ -542,7 +573,7 @@ def main():
             print(f"3: {SETUP['radio']}    inet {SETUP['access_point']} scope global {SETUP['radio']}")
         return 0
     if program == 'hostname' and arguments == ['-I']:
-        print(world()['addresses'])
+        print(' '.join(addresses()))
         return 0
     if program == 'rfkill':
         return 0
@@ -560,6 +591,8 @@ def main():
         return 0
     if program == 'iw':
         return iw(arguments)
+    if program == 'journalctl':
+        return journalctl(arguments)
     if program == SETUP['access_point_script']:
         return access_point_script()
     real(program, arguments)
@@ -583,14 +616,15 @@ class NetworkManager:
         (self.state / 'setup.json').write_text(json.dumps({
             'profiles': str(self.profiles), 'netplan': str(self.netplan), 'radio': RADIO,
             'access_point': ACCESS_POINT_ADDRESS, 'access_point_script': 'wireless_ap.sh',
-            'netplan_rendered': NETPLAN_RENDERED,
+            'netplan_rendered': NETPLAN_RENDERED, 'refused_key_line': REFUSED_KEY_LINE,
             'real': {program: shutil.which(program) for program in REAL_PROGRAMS},
         }))
         self.change(networks={}, access_points=None, addresses='', on_access_point=False, access_point_running=False,
                     active=None, active_ssid=None, active_bssid=None, hold=False, netplan=False, failing=[],
                     broken=[], files_listed=True, stations=[], radio_taken_from_the_access_point=[],
                     empty_scans_after_access_point=0, empty_scans_left=0, connects_during_scan=None,
-                    deaf_on_access_point=False, dnsmasq_running=False)
+                    deaf_on_access_point=False, dnsmasq_running=False, wifi_address='192.0.2.77', journal=[],
+                    nmcli_timeout=False, logged_while_joining='')
         for record in ('calls', 'joins', 'restarts'):
             (self.state / record).write_text('')
         self.stand_in = stand_in = self.programs / 'network-stand-in'
@@ -609,27 +643,44 @@ class NetworkManager:
         return json.loads((self.state / 'world.json').read_text())
 
     def change(self, **values):
-        """Change the world around the box: `networks` ({name: password, None for an open one}), `access_points` (the
-        scan: [{'bssid', 'signal', 'ssid'}], one per network when left None; a network none announces is
-        hidden), `addresses` (what `hostname -I` gives), `on_access_point`, `access_point_running` and
-        `dnsmasq_running` (what serves the access point), `hold` (a join asked from the box page waits for
-        `release`; 'every join' holds those of the watch too), `netplan` (new profiles are netplan files),
-        `failing` (programs that fail when run as root), `broken` (programs that fail when the box user runs
-        them, as nmcli does when NetworkManager does not run), `files_listed` (whether NetworkManager tells
-        the file of each profile), `stations` (who is connected to the access point; None where the radio
-        cannot tell), `connects_during_scan` (a device that connects to the access point while the radio
-        scans), `deaf_on_access_point` (a radio whose scan succeeds and lists nothing while it serves the
-        access point), `empty_scans_after_access_point` (how many scans of NetworkManager list no access
-        point at all once hostapd stopped: a radio that has just served the access point may hear nothing
-        yet). `radio_taken_from_the_access_point` lists, for each start of the access point, the profiles
-        NetworkManager could join by itself, so taking the radio from it."""
+        """Change the world around the box.
+
+        :param networks: {name: password}; ``None`` as the password is an open network
+        :param access_points: the scan, [{'bssid', 'signal', 'ssid'}]; one per network when ``None``, and a
+            network none announces is hidden
+        :param addresses: what `hostname -I` gives
+        :param on_access_point: whether the radio holds the address of the access point
+        :param access_point_running: whether hostapd serves the access point
+        :param dnsmasq_running: whether dnsmasq serves the access point
+        :param hold: a join asked from the box page waits for `release`; 'every join' holds those of the
+            watch too
+        :param netplan: new profiles are netplan files
+        :param failing: programs that fail when run as root
+        :param broken: programs that fail when the box user runs them, as nmcli does when NetworkManager
+            does not run
+        :param files_listed: whether NetworkManager tells the file of each profile
+        :param stations: who is connected to the access point; ``None`` where the radio cannot tell
+        :param connects_during_scan: a device that connects to the access point while the radio scans
+        :param deaf_on_access_point: a radio whose scan succeeds and lists nothing while it serves the
+            access point
+        :param empty_scans_after_access_point: how many scans list no access point at all once hostapd
+            stopped
+        :param wifi_address: the address the radio holds while it holds a network
+        :param journal: what the supplicant of the radio logged, [{'at': seconds since the epoch, 'text'}]
+        :param nmcli_timeout: a join the access point refuses ends on the wait of nmcli, which prints no reason
+        :param logged_while_joining: what the supplicant logs as each join of the box page starts
+        :param radio_taken_from_the_access_point: for each start of the access point, the profiles
+            NetworkManager could join by itself, so taking the radio from it
+        """
         found = json.loads((self.state / 'world.json').read_text()) if (self.state / 'world.json').exists() else {}
         found.update(values)
         (self.state / 'world.json').write_text(json.dumps(found))
 
     def restarts(self):
-        """(what, whether the watch held its lock) of each restart of the box service and each run of the access point
-        script, as the watch asked them."""
+        """Each restart of the box service and run of the access point script the watch asked for.
+
+        :return: a list of (what, whether the watch held its lock)
+        """
         return [tuple(json.loads(line)) for line in (self.state / 'restarts').read_text().splitlines()]
 
     def release(self):
@@ -637,8 +688,10 @@ class NetworkManager:
         (self.state / 'released').write_text('')
 
     def moments(self):
-        """(when, call) of each call the stand-in answered; a call is the list of its words, `sudo` first for one
-        run as root."""
+        """Each call the stand-in answered.
+
+        :return: a list of (when, call); a call is the list of its words, `sudo` first for one run as root
+        """
         return [tuple(json.loads(line)) for line in (self.state / 'calls').read_text().splitlines()]
 
     def calls(self):
@@ -659,10 +712,10 @@ class NetworkManager:
         return [words[2:] for words in self.nmcli_calls() if words[:2] == ['connection', 'add']]
 
     def joined(self):
-        """(name of the network, password) of each join, None as the password of a network joined with none.
+        """Each join.
 
-        The password is the one NetworkManager held when it was first asked to join the profile of the join,
-        whichever way it reached it.
+        :return: a list of (name of the network, password); the password is the one NetworkManager held when it
+            was first asked to join the profile, ``None`` for a network joined with none
         """
         records = [json.loads(line) for line in (self.state / 'joins').read_text().splitlines()]
         made = [record for record in records if 'ssid' in record]
@@ -704,8 +757,12 @@ class NetworkManager:
         return found
 
     def hold_profile(self, name, ssid, password, autoconnect=True, **settings):
-        """Arrange a profile NetworkManager holds already, as one the box found at its start: a network protected
-        by WPA when it has a password. `settings` are more of what the profile holds."""
+        """Arrange a profile NetworkManager holds already, as one the box found at its start.
+
+        :param password: the profile protects the network by WPA when it has a password
+        :param settings: more of what the profile holds
+        :return: the profile
+        """
         profile = {'id': name, 'uuid': str(uuid.uuid4()), 'ssid': ssid, 'autoconnect': autoconnect, **settings}
         if password is not None:
             profile.update(key_mgmt='wpa-psk', psk=password)
@@ -727,10 +784,10 @@ class _Clock:
 
 
 class WatchOfTheBox:
-    """`viin-box-wifi watch`, loaded in this process, with the programs of `network`, its files beside it, and a
-    copy of the network kept on its card. `look` takes the place of a turn of its loop, at the time a test gives,
-    as `time.monotonic` would, and waits for what that look started. The record of the use of the box page is
-    `page_use`; the watch reads it against the clock itself, which `clock.ahead` moves on."""
+    """`viin-box-wifi watch`, loaded in this process, with the programs of `network` and a copy of the network
+    kept on its card. `look` takes the place of a turn of its loop at the time a test gives, and waits for what
+    that look started. `page_use` is the record of the use of the box page; `clock.ahead` moves the clock the
+    watch reads it against."""
 
     def __init__(self, case, network):
         loader = importlib.machinery.SourceFileLoader('box_suite_wifi_watch', str(WIFI_PROGRAM))
@@ -794,9 +851,12 @@ def with_settings_naming_a_locale_the_box_lacks(case):
 
 
 def network_manager(case, answer_delay=0):
-    """Stand a `NetworkManager` in for the programs of the box until the test `case` ends; give it.
+    """Stand a `NetworkManager` in for the programs of the box until the test `case` ends.
 
-    The box has a radio. A join starts `answer_delay` seconds after the route answered, when given.
+    The box has a radio.
+
+    :param answer_delay: seconds after the route answered at which a join starts; ``None`` leaves the box's own
+    :return: the `NetworkManager`
     """
     wifi = common.layer('wifi')
     # A join asked before the test began must not reach the stand-in.

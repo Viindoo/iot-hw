@@ -1,4 +1,4 @@
-"""The readings the box confirms to its server, and the start each event names: row 9 of the seams of the layer."""
+"""The readings the box confirms to its server, and the start each event names."""
 import json
 import tempfile
 
@@ -19,16 +19,18 @@ NUMBER = 9
 SEAMS = (1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 15, 17, 18)
 # Core's event manager takes one more parameter in its call for a device that changed.
 SIGNATURE_MOVED = {'def device_changed(self, device):': 'def device_changed(self, device, origin=None):'}
-# Core's event no longer carries the data of the action under way under the key the pages read.
+# Core's event holds the data of the action under way under another key than the one the pages read.
 EVENT_MOVED = {"'request_data': ": "'action_data': "}
 
 
 def read_on_a_box_whose_event_seam_moved():
     """Start a box whose core moved SIGNATURE_MOVED, pair it, then have its server ask for a confirmed reading.
 
-    Meant for `common.in_new_process`. Gives 'state' (of seam NUMBER), 'pair_request' (what the
-    server got to pair the box), 'answer' (of the action route), 'events' (those core holds for
-    the read) and 'confirmations' (what the server got on READING).
+    Meant for `common.in_new_process`.
+
+    :return: ``state`` (of seam NUMBER), ``paired`` (the status of the pairing), ``pair_request`` (what the server
+        got to pair the box), ``answer`` (of the action route), ``events`` (those core holds for the read) and
+        ``confirmations`` (what the server got on READING)
     """
     configuration = common.configuration_file(tempfile.mkdtemp(prefix='box-suite-'), core_changes=SIGNATURE_MOVED)
     common.start(configuration)

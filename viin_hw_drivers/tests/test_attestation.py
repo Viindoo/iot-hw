@@ -23,10 +23,9 @@ BOOT_ID = 'viin_boot_id'
 WEIGHT = 48.271953
 # How long the box waits for its server at most before a page gets a reading the server asked for.
 CAP = 3
-# What a busy software box adds to a wait the box itself bounds, and the share of CAP within which a read that has
-# nothing to wait for is confirmed (or left unconfirmed). Both bound the time the box spends in the confirmation of
-# a read, measured from inside the box: the round trip of the request that carried the read is not part of it.
+# What a busy software box adds to a wait the box itself bounds.
 SLACK = 1.0
+# The share of CAP within which a read that has nothing to wait for is confirmed (or left unconfirmed).
 AT_ONCE = CAP / 2
 
 _instrument_classes = []
@@ -37,10 +36,11 @@ def event_manager():
 
 
 def plug_instrument(identifier):
-    """Plug, into the box started in this process, a device that reads what its `shows` holds; return it.
+    """Plug a device that reads what its `shows` holds into the box started in this process.
 
-    Its `read_once` action puts `shows` in the data of the device, as a driver puts what it read
-    there, and tells the pages that listen to it.
+    Its `read_once` action puts `shows` in the data of the device and tells the pages that listen to it.
+
+    :return: the device
     """
     if not _instrument_classes:
         class Instrument(common.core('driver').Driver):
@@ -63,7 +63,10 @@ def plug_instrument(identifier):
 
 
 def events_of(request):
-    """The events core holds for the read whose action carried the value-request token `request`."""
+    """Give the events core holds for the read whose action carried the value-request token `request`.
+
+    :rtype: list
+    """
     return [event for event in list(event_manager().events)
             if (event.get('request_data') or {}).get('viin_iot_request') == request]
 
@@ -80,8 +83,7 @@ def start_named_by_an_event():
 class ServerThatTakesReadings(common.FakeServer):
     """A server that answers each confirmation of a reading with `status`.
 
-    `released_when_received` tells, per confirmation, whether a page could already have the
-    reading when it came: the event in core's list, or handed to the page waiting for it.
+    `released_when_received` tells, per confirmation, whether a page could already have the reading when it came.
     """
 
     def __init__(self, status=200, **options):
@@ -165,7 +167,7 @@ class ReadingsCase(common.BoxCase):
         self.time_the_confirmations()
 
     def time_the_confirmations(self):
-        """Record, per device, the seconds each confirmation of a read took from its start to its end in the box."""
+        """Record, per device, the seconds each confirmation of a read took in the box."""
         attestation = common.layer('attestation')
         original = attestation.confirm
 
@@ -179,27 +181,39 @@ class ReadingsCase(common.BoxCase):
         self.enterContext(mock.patch.object(attestation, 'confirm', timed))
 
     def paired_with(self, server):
-        """The box holds `server` as its server, with CREDENTIAL, as a paired box does after its restart."""
+        """Give the box `server` as its server, with CREDENTIAL, as a paired box has it after its restart.
+
+        :return: `server`
+        """
         common.store_box_configuration(remote_server=server.url, token=CREDENTIAL)
         return server
 
     def read(self, identifier=INSTRUMENT, **marks):
-        """(answer of the action route, seconds the box spent confirming it) of a read a page asks of the device,
-        `marks` in its data."""
+        """Have a page ask the device for a read, `marks` in its data.
+
+        :return: the answer of the action route, and the seconds the box spent confirming the read
+        :rtype: tuple
+        """
         data = json.dumps({'action': 'read_once', **marks})
         answer = self.call(ACTION, session_id=SESSION, device_identifier=identifier, data=data)
         return answer, self.confirm_seconds[identifier][-1]
 
     def marked_read(self, identifier=INSTRUMENT):
-        """A read the server asked to be confirmed: its value-request token and the confirmation mark."""
+        """Read as a page does when the server asked for the confirmation: with a value-request token and the mark."""
         return self.read(identifier, viin_iot_request=self.request_token, viin_iot_attest=True)
 
     def released(self):
-        """The values of the events a page can get for the read of this test."""
+        """Give the values of the events a page can get for the read of this test.
+
+        :rtype: list
+        """
         return [event['value'] for event in events_of(self.request_token)]
 
     def scale(self, weight):
-        """The simulated scale with `weight` on it, the file of the scale put back when the test ends."""
+        """Put `weight` on the simulated scale; the file of the scale is put back when the test ends.
+
+        :return: the scale
+        """
         [scale] = box.wait_for_devices(box.SCALE)
         box.keep_files(self, box.SCALE_FILE)
         box.SCALE_FILE.write_text(f'{weight}\n')
@@ -396,7 +410,11 @@ class TestReadsWhileOthersWaitForTheServer(ReadingsCase):
         results[identifier] = (answer, self.confirm_seconds[identifier][-1])
 
     def reads_under_way(self, results):
-        """Start a read on each instrument but the last, on a thread each; return the threads."""
+        """Start a read on each instrument but the last, on a thread each.
+
+        :return: the threads
+        :rtype: list
+        """
         threads = [threading.Thread(target=self.read_on, args=(identifier, results), daemon=True)
                    for identifier in self.instruments[:self.UNDER_WAY]]
         for thread in threads:
@@ -481,8 +499,8 @@ class TestReadsWhileOthersWaitForTheServer(ReadingsCase):
         results = {}
         threads = self.reads_under_way(results)
         common.wait_until(lambda: len(resolved) == self.UNDER_WAY, 'the look-ups to be under way', 10)
-        # The places come free two seconds into the wait of the last read, so a full CAP for the server would end it
-        # at five seconds, a second past the bound.
+        # The places come free partway into the wait of the last read: a full CAP for the server would end it past
+        # the bound.
         freeing = threading.Timer(2, stall.set)
         self.addCleanup(freeing.cancel)
 

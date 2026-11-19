@@ -130,9 +130,9 @@ def _choose_address(core_value):
 def reported_address():
     """The address the box reports to its server, which the server hands to browsers.
 
-    {'address', 'source', 'core'}: `source` is OWN_NAME, ADDRESS, LOCAL_NAME,
-    or CORE_VALUE when seam 7 is not in place; `core` is the value
-    core computes, kept to show what was set aside.
+    :return: ``address``, its ``source`` (OWN_NAME, ADDRESS, LOCAL_NAME, or CORE_VALUE when the seam of
+        `Manager._get_domain` is not in place) and ``core``, the value core computes, kept to show what was set aside
+    :rtype: dict
     """
     manager = core('main').manager
     original = _originals.get('domain')
@@ -177,7 +177,10 @@ def _built_in(device):
 
 
 def _built_in_interfaces():
-    """[(name, wireless)] of the Ethernet-type interfaces built into the board, the wired ones first."""
+    """The Ethernet-type interfaces built into the board, the wired ones first.
+
+    :return: ``[(name, wireless)]``
+    """
     try:
         names = sorted(entry.name for entry in NETWORK_INTERFACES.iterdir())
     except OSError:
@@ -200,7 +203,10 @@ def _spelled(octets):
 
 
 def _permanent_address(name):
-    """The address the interface's hardware carries, whatever address it uses now; '' when it gives none."""
+    """The address the interface's hardware carries, whatever address it uses.
+
+    :return: the address; ``''`` when the hardware gives none
+    """
     request = array.array('B', struct.pack('II', ETHTOOL_GPERMADDR, MAX_ADDRESS_LENGTH) + bytes(MAX_ADDRESS_LENGTH))
     pointer, _length = request.buffer_info()
     interface_request = struct.pack('16sP', name.encode()[:15], pointer).ljust(IFREQ_SIZE, b'\0')
@@ -234,9 +240,10 @@ def _choose_hardware_address(original):
 def hardware_address():
     """The hardware address the box reports, the same whichever interface carries its traffic.
 
-    {'address', 'interface', 'source'}: `source` is WIRED, WIRELESS, or
-    CORE_VALUE - core's answer, when no built-in interface can be read or
-    seam 17 is not in place; `interface` is '' then.
+    :return: ``address``, the ``interface`` it comes from and its ``source``: WIRED, WIRELESS, or CORE_VALUE - core's
+        answer, when no built-in interface can be read or the seam of `get_mac_address` is not in place - with an
+        empty ``interface``
+    :rtype: dict
     """
     original = _originals.get('mac_address')
     if original is None:
@@ -259,13 +266,13 @@ class _HeldByManager(FunctionSeam):
         super().check()
         manager = self._manager()
         if not hasattr(manager, self.attribute):
-            raise SeamError(f'the device manager no longer keeps {self.attribute}')
+            raise SeamError(f'the device manager does not keep {self.attribute}')
         try:
             reported = _names(type(manager).send_alldevices)
         except AttributeError:
             raise SeamError('Manager.send_alldevices does not exist') from None
         if self.attribute not in reported:
-            raise SeamError(f'Manager.send_alldevices no longer reports {self.attribute}')
+            raise SeamError(f'Manager.send_alldevices does not report {self.attribute}')
 
     def current(self, manager):
         raise NotImplementedError
@@ -343,7 +350,7 @@ class ReportedHardwareAddress(_HeldByManager):
         except (KeyError, AttributeError):
             raise SeamError(f'{LIVE_CHANNEL} has no on_message or WebsocketClient.on_open') from None
         if 'get_mac_address' not in compared:
-            raise SeamError("the live channel no longer asks core's helpers for the hardware address of the box")
+            raise SeamError("the live channel does not ask core's helpers for the hardware address of the box")
         bound = sorted(
             module_name for module_name, module in list(sys.modules.items())
             if module_name.startswith(CORE) and module_name != HELPERS and module is not None

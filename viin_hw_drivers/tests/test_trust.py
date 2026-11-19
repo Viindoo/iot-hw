@@ -42,12 +42,13 @@ WEB_SERVER_PID = Path('/run/nginx.pid')
 # A file of configuration the web server reads beside the certificate of the box.
 UNUSABLE_FILE = '/etc/nginx/conf.d/box-suite-unusable.conf'
 # How long a test keeps the web server from reading after a first change of a pair, while a second change must
-# write nothing: a change takes a fraction of it, and the box waits longer than that for the web server to read.
+# write nothing.
 HELD = 2
-# The address a certificate of the box was made at, and the addresses the box holds when it looks at it again.
+# The address a certificate of the box was made at: the box's own address on its access point.
 EARLIER_ADDRESS = '10.11.12.1'
-ADDRESS = '192.168.1.50'
-SECOND_ADDRESS = '192.168.7.20'
+# The addresses the box holds when it looks at that certificate again.
+ADDRESS = '192.0.2.50'
+SECOND_ADDRESS = '192.0.2.20'
 
 _certificate_changes = []
 
@@ -70,7 +71,10 @@ def name_of_this_box():
 
 
 def certificate_of_this_box_ending_in(days):
-    """Install, as the certificate the box made for itself, one that ends in `days` days; return it."""
+    """Install, as the certificate the box made for itself, one that ends in `days` days from now.
+
+    :return: the installed certificate
+    """
     host = socket.gethostname()
     certificate = common.make_certificate(
         name_of_this_box(), names=[host, f'{host}.local'], valid_until=common.utc_now() + days * DAY)
@@ -79,7 +83,10 @@ def certificate_of_this_box_ending_in(days):
 
 
 def certificate_changes():
-    """The list the box started in this process adds to each time its web server gets another certificate."""
+    """Empty and return the record of the certificate changes of the web server.
+
+    :return: the list the box started in this process adds to each time its web server gets another certificate
+    """
     if not _certificate_changes:
         changes = []
         common.layer('trust').on_certificate_change(lambda: changes.append(1))
@@ -89,7 +96,11 @@ def certificate_changes():
 
 
 def accepted(authorities, server):
-    """Whether a connection that verifies against the PEM file `authorities` accepts the certificate of `server`."""
+    """Tell whether a connection to `server` verifies its certificate against `authorities`.
+
+    :param authorities: path of a PEM file of authorities
+    :rtype: bool
+    """
     context = ssl.create_default_context(cafile=authorities)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     try:
@@ -111,11 +122,14 @@ def file_of_core_that_calls_a_server():
 def start_a_box_beside_its_server(certificate, key, port, public_authority=''):
     """Start the box of the configuration while its server listens on `port` of this machine.
 
-    Meant for `common.in_new_process`. The server shows the certificate of the PEM texts
-    `certificate` and `key` and gives a box that reports a live channel. `public_authority` is
-    the PEM text of an authority that counts, on that box, among those every browser trusts.
-    Gives 'calls', what the server received once the box had taken each of ROADS or 30 seconds
-    had passed, and 'credentials', those of the reports among them.
+    Meant for `common.in_new_process`.
+
+    :param certificate: PEM text of the certificate the server shows
+    :param key: PEM text of its key
+    :param public_authority: PEM text of an authority that counts, on that box, among those every browser trusts
+    :return: ``calls``, what the server received once the box had taken each of ROADS or the wait for them ended,
+        and ``credentials``, those of the reports among them
+    :rtype: dict
     """
     if public_authority:
         common.make_public_from_the_start(public_authority)
@@ -131,9 +145,11 @@ def start_a_box_beside_its_server(certificate, key, port, public_authority=''):
 def start_a_box_whose_memory_takes_no_new_file():
     """Start the box of the configuration on a machine whose memory-backed storage takes no new file.
 
-    Meant for `common.in_new_process`. Gives 'answers', the status of the address that tells a
-    box started, 'device_manager_runs' and 'device_handlers', how many kinds of devices core
-    has loaded the handlers of.
+    Meant for `common.in_new_process`.
+
+    :return: ``answers``, the status of the address that tells a box started; ``device_manager_runs``, whether the
+        device manager of core runs; ``device_handlers``, how many kinds of devices core has loaded the handlers of
+    :rtype: dict
     """
     storage = Path(tempfile.mkdtemp(prefix='box-suite-'))
     storage.chmod(0o500)
@@ -148,14 +164,16 @@ def start_a_box_whose_memory_takes_no_new_file():
 
 
 def covered_names(certificate):
-    """The host names and the addresses a certificate is issued for, as text."""
+    """Give the host names and the addresses a certificate is issued for, as text.
+
+    :rtype: set
+    """
     alternative = certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     return {str(name) for name in alternative.get_values_for_type(x509.DNSName)
             } | {str(address) for address in alternative.get_values_for_type(x509.IPAddress)}
 
 
 def web_certificate_covers(*names):
-    """Whether the certificate installed for the web server is issued for all of `names`."""
     try:
         return set(names) <= covered_names(common.web_certificate())
     except (OSError, ValueError):
@@ -168,10 +186,12 @@ def certificate_made_for_the_box_at(address, **options):
 
 
 def start_a_box_whose_certificate_was_made_at_another_address(earlier, address):
-    """Start the box of the configuration, holding `address`, while the web server presents a certificate of the
-    box that was made at the address `earlier`.
+    """Start the box, holding `address`, while the web server presents a certificate of the box made at `earlier`.
 
-    Meant for `common.in_new_process`. Gives 'names', those the certificate has once it covers `address`.
+    Meant for `common.in_new_process`.
+
+    :return: ``names``, those the certificate has once it covers `address`
+    :rtype: dict
     """
     common.install_web_certificate(certificate_made_for_the_box_at(earlier))
     with box.network({'eth0': address}):
@@ -181,13 +201,14 @@ def start_a_box_whose_certificate_was_made_at_another_address(earlier, address):
 
 
 def follow_the_addresses_of_a_running_box(first, second):
-    """Start the box of the configuration holding the address `first`, leave it with it for a while, then give it
-    the address `second` as well.
+    """Start the box holding the address `first`, then give it the address `second` as well.
 
-    Meant for `common.in_new_process`. The wait of the box between two looks at its addresses is shortened
-    to a tenth of a second. Gives 'unchanged', whether its certificate stayed the same through five looks
-    that found no new address, 'names', those of the certificate once it covers `second`, and 'first_wait',
-    the seconds the box waited before its first look at its addresses.
+    Meant for `common.in_new_process`.
+
+    :return: ``unchanged``, whether its certificate stayed the same through five looks that found no new address;
+        ``names``, those of the certificate once it covers `second`; ``first_wait``, the seconds the box waited
+        before its first look at its addresses
+    :rtype: dict
     """
     waits, addresses, sleep = [], {'eth0': first}, time.sleep
 
@@ -214,11 +235,13 @@ def follow_the_addresses_of_a_running_box(first, second):
 def follow_the_looks_of_a_box_at_its_certificate():
     """Start a box whose start can run no command as root, then follow the looks it takes at its certificate.
 
-    Meant for `common.in_new_process`. While the box waits for its second look, its certificate
-    is replaced by one of its own that ends in 59 days. Gives 'after_the_first_look', the common
-    name of the certificate installed when that wait began, 'waited', the seconds of that wait,
-    and 'renewed', whether the certificate that neared its end was replaced once the second
-    look was over.
+    Meant for `common.in_new_process`. Between its first and second look its certificate is replaced by one of its
+    own that ends within the renewal period.
+
+    :return: ``after_the_first_look``, the common name of the certificate installed when the first wait began;
+        ``waited``, the seconds of that wait; ``renewed``, whether the certificate that neared its end was replaced
+        once the second look was over
+    :rtype: dict
     """
     waits, seen, looked_twice = [], {}, threading.Event()
     sleep = time.sleep
@@ -250,11 +273,13 @@ def follow_the_looks_of_a_box_at_its_certificate():
 
 
 def first_writing_of_the_pair_beside_the_restart_of_the_web_server():
-    """Start a box whose start can run no command as root, so that its keeper writes the pair the web server reads
-    at its first look; give when the restart of the web server, core's first act, and that writing began.
+    """Start a box whose start can run no command as root, so that its keeper writes the pair at its first look.
 
-    Meant for `common.in_new_process`. Gives 'restart', [began, ended] of core's restart of the web server, and
-    'writing', the moment the keeper began writing the pair, as readings of the same clock.
+    Meant for `common.in_new_process`.
+
+    :return: ``restart``, [began, ended] of core's restart of the web server, and ``writing``, the moment the
+        keeper began writing the pair, as readings of the same clock
+    :rtype: dict
     """
     moments, pair = {}, (common.WEB_CERTIFICATE.name, common.WEB_KEY.name)
 
@@ -289,11 +314,11 @@ class TestCertificateOfANewBox(common.BoxStateCase):
 
     @classmethod
     def two_starts(cls):
-        """A box that holds the certificate of the image starts, then starts again; once for the class.
+        """Start a box that holds the certificate of the image, then start it again; once for the class.
 
-        Gives that certificate ('shipped'), the one installed after the first start ('made') with the
-        fingerprint of what the web server presented then ('served'), and the one installed after
-        the second start ('kept').
+        :return: ``shipped``, that certificate; ``made``, the one installed after the first start; ``served``, the
+            fingerprint of what the web server presented then; ``kept``, the one installed after the second start
+        :rtype: dict
         """
         if '_two_starts' not in vars(cls):
             shipped = common.make_certificate(common.SHIPPED_COMMON_NAME)
@@ -364,7 +389,10 @@ class TestCertificateOfTheBoxCoversItsAddresses(common.BoxCase):
         self.keep_web_certificate()
 
     def refresh(self, *held):
-        """Have the box look at its certificate while it holds the addresses `held`; True when it made another."""
+        """Have the box look at its certificate while it holds the addresses `held`.
+
+        :return: ``True`` when it made another certificate
+        """
         with box.network({f'eth{index}': address for index, address in enumerate(held)}):
             return common.layer('trust').refresh_box_certificate()
 
@@ -440,8 +468,7 @@ class TestCertificateOfTheBoxAtItsStartAndWhileItRuns(common.BoxStateCase):
 class TestLooksOfTheBoxAtItsCertificate(common.BoxStateCase):
 
     def looks(self):
-        """What `follow_the_looks_of_a_box_at_its_certificate` gives of a box that holds the certificate of the
-        image, once for the tests of the class."""
+        """Give `follow_the_looks_of_a_box_at_its_certificate` for a box that holds the certificate of the image."""
         cls = type(self)
         if '_looks' not in vars(cls):
             self.keep_web_certificate()
@@ -495,7 +522,7 @@ class TestCertificateTheWebServerRefusedToTake(common.BoxCase):
 class TestWatcherOfTheAddressesAfterTheWebServerRefusedACertificate(common.BoxStateCase):
 
     def looks(self):
-        """What `follow_a_certificate_the_web_server_refused_to_take` gives, once for the tests of the class."""
+        """Give `follow_a_certificate_the_web_server_refused_to_take`, run once for the class."""
         cls = type(self)
         if '_looks' not in vars(cls):
             self.keep_web_certificate()
@@ -532,7 +559,10 @@ class TestWebServerThatCannotReadItsFilesAgain(common.BoxCase):
             return self.trust.refresh_box_certificate()
 
     def address_line(self):
-        """State, reason and action of the browser address line of a box that gives browsers ADDRESS."""
+        """Work out the browser address line of a box that gives browsers ADDRESS.
+
+        :return: [state, reason, action] of the line
+        """
         chosen = {'address': ADDRESS, 'source': 'address', 'core': ADDRESS}
         with mock.patch.object(common.layer('seams.identity'), 'reported_address', return_value=chosen), \
                 box.network({'eth0': ADDRESS}):
@@ -760,7 +790,10 @@ class TestFilesTheBoxWritesAsRoot(common.BoxCase):
         self.addCleanup(common.as_root, 'sh', '-c', f'rm -f {ROOT_FILES[0]}*')
 
     def written(self):
-        """What the file holds; None when it does not exist."""
+        """Read the file as root.
+
+        :return: what the file holds, ``None`` when it does not exist
+        """
         read = subprocess.run(['sudo', '-n', 'cat', ROOT_FILES[0]], capture_output=True, check=False)
         return None if read.returncode else read.stdout
 
@@ -821,8 +854,10 @@ class TestFilesTheBoxWritesAsRoot(common.BoxCase):
 
 @contextlib.contextmanager
 def web_server_held():
-    """Keep the web server of the box from reading its files during the block: the reloads it is asked for
-    meanwhile are read once the block ends."""
+    """Keep the web server of the box from reading its files during the block.
+
+    The reloads it is asked for meanwhile are read once the block ends.
+    """
     master = WEB_SERVER_PID.read_text().strip()
     common.as_root('kill', '-STOP', master)
     try:
@@ -899,7 +934,10 @@ class TestChangesOfThePairsWhileTheWebServerReadsThem(common.BoxCase):
         self.assertEqual(self.name_pair_in_use(), name.pem.encode())
 
     def name_pair_in_use(self):
-        """The certificate `current` of the pair of the Viindoo name leads to; empty when there is none."""
+        """Read the certificate `current` of the pair of the Viindoo name leads to.
+
+        :return: its content, empty when there is none
+        """
         return common.as_root('sh', '-c', f'cat {NAME_PAIR}/current/fullchain.pem 2>/dev/null || true').stdout
 
 
@@ -910,10 +948,15 @@ class StopLooking(BaseException):
 class TestLogOfLooksThatKeepFailing(common.BoxCase):
 
     def logged(self, looking, outcomes, between_looks=lambda: None):
-        """Run `looking`, the work of the keeper or of the watcher of the addresses, on this thread for one look at
-        the certificate of the box per entry of `outcomes`: the error that ends that look, or None for a look that
-        succeeds; `between_looks` runs in each wait for the next look. Give each record the box logged about them:
-        the failure when it carries its traceback, else the record itself."""
+        """Run the work of the keeper or of the watcher of the addresses on this thread, one look per outcome.
+
+        :param looking: the ``run`` of the keeper or of the watcher
+        :param outcomes: per look at the certificate of the box, the error that ends it, or ``None`` for a look that
+            succeeds
+        :param between_looks: called in each wait for the next look
+        :return: per record the box logged about the looks, the failure when the record carries its traceback, else
+            the record itself
+        """
         trust, this, remaining = common.layer('trust'), threading.current_thread(), list(outcomes)
         done, sleep = threading.Event(), time.sleep
 
@@ -1000,13 +1043,13 @@ class TrustCase(common.BoxCase):
     """A box, and servers that show it a certificate no public authority issued."""
 
     def server_nobody_trusted(self, certificate=None):
-        """An https server the box was given without a pairing: its certificate was shown to no installer."""
+        """Give the box an https server without a pairing: its certificate was shown to no installer."""
         server = self.server(certificate=certificate or common.make_certificate('localhost'))
         common.store_box_configuration(remote_server=server.url, token=CREDENTIAL)
         return server
 
     def server_the_installer_trusted(self, kind=None):
-        """An https server the box is paired with. Its certificate may issue others, as many self-signed ones may."""
+        """Pair the box with an https server whose certificate the installer trusted; it may issue others."""
         self.trusted = common.make_certificate('localhost', authority=True)
         return self.box_with_server(CREDENTIAL, certificate=self.trusted, kind=kind)
 
@@ -1286,13 +1329,16 @@ class RoadsToTheServer:
     """The roads a box takes to its server when it starts, for a test class that says what the server shows."""
 
     def certificate_of_the_server(self):
-        """(`Certificate` the server shows once the box starts, PEM text of the public authority it has or '')."""
+        """Give the certificate the server shows once the box starts.
+
+        :return: the `Certificate`, and the PEM text of the public authority the box has, or ``''``
+        """
         raise NotImplementedError
 
     def box(self):
-        """What `start_a_box_beside_its_server` gives, once for the tests of the class.
+        """Give `start_a_box_beside_its_server`, run once for the class.
 
-        The box was paired with a server whose certificate the installer trusted; the server of
+        The box is paired with a server whose certificate the installer trusted; the server of
         `certificate_of_the_server` listens at the same address when the box starts.
         """
         cls = type(self)
@@ -1335,9 +1381,12 @@ class TestStartBesideAServerWhoseTrustedCertificateGaveWayToAPublicOne(RoadsToTh
 class TestStartOfABoxWhoseMemoryTakesNoNewFile(common.BoxCase):
 
     def box(self):
-        """A box paired with a server whose certificate the installer trusted starts where its memory-backed
-        storage takes no new file; once for the tests of the class. Also gives 'calls', what its server
-        received from the pairing on."""
+        """Start a box paired with a server the installer trusted where its memory-backed storage takes no new file.
+
+        :return: `start_a_box_whose_memory_takes_no_new_file` plus ``calls``, what the server received from the
+            pairing on
+        :rtype: dict
+        """
         cls = type(self)
         if '_box' not in vars(cls):
             server = self.box_with_server(CREDENTIAL, certificate=common.make_certificate('localhost'))
@@ -1354,7 +1403,7 @@ class TestStartOfABoxWhoseMemoryTakesNoNewFile(common.BoxCase):
         self.assertIs(box['device_manager_runs'], True)
         self.assertGreater(box['device_handlers'], 0)
 
-    def test_nothing_is_sent_to_the_server_the_box_can_no_longer_verify(self):
+    def test_nothing_is_sent_to_the_server_the_box_cannot_verify(self):
         self.assertEqual(self.box()['calls'], ['POST /iot/pair'])
 
 

@@ -43,7 +43,10 @@ TYPED_NAME = SETTINGS_OF_THE_BOX['viin_box_address']
 
 
 def as_time(text):
-    """The moment an answer gives as text, to compare it with a moment in UTC; None when it gives none."""
+    """Read the moment an answer gives as text, to compare it with a moment in UTC.
+
+    :return: the moment; ``None`` when the answer gives none
+    """
     return text and datetime.datetime.fromisoformat(text.replace('Z', '+00:00'))
 
 
@@ -52,13 +55,13 @@ def in_utc(moment):
 
 
 def certificate_the_box_made(*names):
-    """A certificate of the box issued for its host names and `names`."""
+    """Make a certificate of the box issued for its host names and `names`."""
     host = socket.gethostname()
     return box.box_made_certificate([host, f'{host}.local', *names])
 
 
 def names_of(certificate):
-    """The host names a `Certificate` is issued for."""
+    """List the host names a `Certificate` is issued for."""
     try:
         alternative = certificate.certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName)
     except x509.ExtensionNotFound:
@@ -67,7 +70,7 @@ def names_of(certificate):
 
 
 class ServerThatTakesItsTime(common.FakeServer):
-    """Keeps a pairing request waiting until `answer_now` is set; `asked` tells that the request has come."""
+    """Keeps a pairing request waiting until `answer_now` is set; `asked` is set once the request has come."""
 
     def __init__(self, **options):
         self.asked, self.answer_now = threading.Event(), threading.Event()
@@ -93,11 +96,12 @@ class ServerThatChangesItsCertificate(common.FakeServer):
 
 
 def pair_a_box_that_does_not_confirm_readings(**said_by_the_caller):
-    """Pair a box that loaded PAIRING_FILES and no other file of the layer. Meant for
-    `common.in_new_process`: which files a box loaded holds for as long as its process.
+    """Pair a box that loaded PAIRING_FILES and no other file of the layer.
 
-    `said_by_the_caller` is what the caller of the box adds to its pairing request. Gives 'answer', what
-    the box answered, and 'requests', the pairing requests its server received.
+    Meant for `common.in_new_process`: which files a box loaded holds for as long as its process.
+
+    :param said_by_the_caller: what the caller of the box adds to its pairing request
+    :return: ``answer``, what the box answered, and ``requests``, the pairing requests its server received
     """
     common.keep_all_but(*PAIRING_FILES)
     common.start()
@@ -107,10 +111,11 @@ def pair_a_box_that_does_not_confirm_readings(**said_by_the_caller):
 
 
 def pair_a_box_that_confirms_readings():
-    """Pair a box whose software said that it confirms the readings it issues. Meant for `common.in_new_process`:
-    what the software of a box said of itself holds for as long as its process.
+    """Pair a box whose software said that it confirms the readings it issues.
 
-    Gives 'answer', what the box answered, and 'requests', the pairing requests its server received.
+    Meant for `common.in_new_process`: what the software of a box said of itself holds for as long as its process.
+
+    :return: ``answer``, what the box answered, and ``requests``, the pairing requests its server received
     """
     common.start()
     common.layer('pairing').declare_confirms_readings()
@@ -133,7 +138,7 @@ class PairingCase(common.BoxCase):
         self.assertEqual((answer.get('status'), answer.get('reason')), (status, reason), answer)
 
     def assertUntrusted(self, answer, problem, trustable, shown):
-        """The box refused the certificate of the server for `problem` and shows the `Certificate` `shown`."""
+        """Assert that the box refused the certificate of the server for `problem` and shows the `Certificate` `shown`."""
         self.assertAnswer(answer, 'failed', 'server_certificate_untrusted')
         self.assertLessEqual(UNTRUSTED_KEYS, set(answer))
         self.assertEqual((answer['problem'], answer['trustable']), (problem, trustable), answer)
@@ -384,7 +389,10 @@ class TestFailuresOnTheWay(PairingCase):
 class TestServerCertificateNoConfirmationMakesGood(PairingCase):
 
     def not_good(self):
-        """{problem: a certificate no public authority issued and that has it}, each for the name `localhost`."""
+        """Make a certificate for each problem a certificate no public authority issued can have, for `localhost`.
+
+        :return: the certificates by problem
+        """
         now = common.utc_now()
         return {
             'name_mismatch': common.make_certificate('another-name.example'),
@@ -433,7 +441,7 @@ class TestServerCertificateNoConfirmationMakesGood(PairingCase):
     def test_server_that_changes_its_certificate_once_the_installer_confirmed_it_gets_no_code(self):
         confirmed = common.make_certificate('localhost')
         later = common.make_certificate('localhost')
-        # The box looks three times at the certificate of a server before it sends the code.
+        # The box reads the certificate of a server three times before it sends the code.
         server = self.server(
             ServerThatChangesItsCertificate, later=later, callers=3, answer=PAIRED, certificate=confirmed)
 
@@ -668,8 +676,8 @@ class TestAuthorityTextThatHoldsSeveralRoots(PairingCase):
 class TrustedServerCase(common.BoxCase):
     """A box whose server shows a certificate the installer trusted, and the proof that unlocks its settings.
 
-    That certificate is issued for the name of the server and for another name of this machine,
-    by which a second server can show it.
+    The certificate is issued for the name of the server and for another name of this machine, by which a second
+    server can show it.
     """
 
     def setUp(self):
@@ -679,13 +687,19 @@ class TrustedServerCase(common.BoxCase):
         _answer, self.proof = self.unlock(VECTOR_SETTINGS_CODE)
 
     def credentials_sent_to(self, server):
-        """The credentials `server` gets when core reports to it, on the box as it is connected now."""
+        """Have core report to `server`.
+
+        :return: the credentials `server` gets
+        """
         common.forget_cached_configuration()
         self.report_to(server)
         return common.reported_credentials(server)
 
     def taking_the_place_of(self, server):
-        """Close `server`; return one that listens at its address and shows the certificate trusted first."""
+        """Close `server` and start another at its address that shows the certificate trusted first.
+
+        :return: the other server
+        """
         server.close()
         return self.server(certificate=self.first_certificate, host=server.host, port=server.port)
 
@@ -814,7 +828,7 @@ class TestDisconnect(common.BoxCase):
         _answer, self.proof = self.unlock(VECTOR_SETTINGS_CODE)
 
     def serving(self, certificate):
-        """Have the web server of the box present `certificate`, a `Certificate`, or none when it is None."""
+        """Have the web server of the box present `certificate`, a `Certificate`; none when it is ``None``."""
         self.keep_web_certificate()
         if certificate:
             common.install_web_certificate(certificate)
@@ -833,7 +847,7 @@ class TestDisconnect(common.BoxCase):
 
     def test_disconnected_box_given_its_server_again_sends_no_credential_on_the_certificate_trusted_before(self):
         self.request(DISCONNECT, proof=self.proof)
-        # Given back without a pairing: this time no installer confirmed the certificate of the server.
+        # Given back without a pairing: no installer confirmed the certificate of the server.
         common.store_box_configuration(remote_server=self.server_left.url, token=VECTOR_CREDENTIAL)
 
         self.report_to(self.server_left)
@@ -922,7 +936,10 @@ class TestChangesOfTheServerAtOnce(PairingCase):
         self.addCleanup(self.first_server.answer_now.set)
 
     def pairing_under_way(self):
-        """Start a pairing with the first server and return it once that server holds its request."""
+        """Start a pairing with the first server.
+
+        :return: the pairing, once that server holds its request
+        """
         pairing = self.callers.submit(common.call_route, PAIR, link=self.first_server.link(CODE))
         self.assertTrue(self.first_server.asked.wait(30))
         return pairing
@@ -946,7 +963,7 @@ class TestChangesOfTheServerAtOnce(PairingCase):
         first = self.pairing_under_way()
 
         connecting = self.callers.submit(common.call_route, CONNECT, token=CORE_CONNECTION)
-        # A box that did not make the call wait would have connected by now.
+        # A box that did not make the call wait connects before the pairing answers.
         concurrent.futures.wait([connecting], timeout=2)
         self.first_server.answer_now.set()
 

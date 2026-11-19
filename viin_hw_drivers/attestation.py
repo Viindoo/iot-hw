@@ -4,7 +4,7 @@ When a page of the server reads a device with a value-request token and asks
 for confirmation, the box sends the value it is about to hand to the browser to
 its own server first. The server then accepts, for that request, only the value
 the box confirmed: what a browser relays cannot be invented on the way. Every
-other read - a till weighing every half second, a suggestion, a device test - is
+other read - a till weighing continuously, a suggestion, a device test - is
 left exactly as core makes it, with no call to the server.
 """
 import json
@@ -56,7 +56,10 @@ class _Seen:
 
 
 def seen(device):
-    """What core's event manager is handed for `device`: `device` itself when its data cannot be copied."""
+    """The device as core's event manager is handed it, its data carrying BOOT_ID_KEY.
+
+    :return: a view of `device` with a copy of its data; `device` itself when its data cannot be copied
+    """
     try:
         return _Seen(device, {**device.data, BOOT_ID_KEY: BOOT_ID})
     except Exception:
@@ -64,10 +67,10 @@ def seen(device):
 
 
 def requested(request):
-    """The value-request token of the action that asked to confirm this read; None for any other read.
+    """The value-request token of the action that asked to confirm this read.
 
-    `request` is core's proxy of the HTTP request under way, unbound outside one.
-    The data of an action that does not mention confirmation is not parsed.
+    :param request: core's proxy of the HTTP request under way, unbound outside one
+    :return: the token; ``None`` for any other read
     """
     try:
         raw = request.params.get('data') if request else None
@@ -93,11 +96,14 @@ def finite_number(value):
 
 
 def reading(device, token):
-    """The params of the confirmation of what `device` holds now, for the request `token`; None when no number.
+    """The params of the confirmation of what `device` holds now.
 
     The unit is sent only as the driver's own text, exactly: the server compares
     it with the unit the browser relays, so a default here would refuse an
     honest reading.
+
+    :param token: the value-request token of the read
+    :return: the params; ``None`` when the device holds no number
     """
     data = device.data
     value = data.get('value')
@@ -147,12 +153,14 @@ def _send(params, ended):
 
 
 def confirm(device, request):
-    """Tell the server the value `device` holds when the action under way asked for it; never raises.
+    """Tell the server the value `device` holds when the action under way asked for it.
 
     Returns once the server answered, the call failed, or TIMEOUT seconds have
-    passed since the read asked, whichever comes first - waiting for a free
-    place among the confirmations under way is part of that time; a read that
-    did not ask returns at once.
+    passed since the read asked: waiting for a free place among the confirmations
+    under way counts toward TIMEOUT. A read that did not ask returns at once. A
+    failure is logged, never raised.
+
+    :param request: core's proxy of the HTTP request under way
     """
     token = requested(request)
     if token is None:

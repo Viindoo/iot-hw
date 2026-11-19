@@ -1,13 +1,11 @@
 """The software release a box runs: looking for one, checking it, moving to it.
 
-A box follows one git ref of the layer repository, its channel: for a supported
-box, the branch `box-release/<series>`, which only a published release moves. The
-commit at the head of the channel holds a pointer file that names a release, and a
-tag `box-<series>-<release>` must name that same commit. That commit is the layer,
-and the pointer names the commit of core that goes with it. The
-box runs that pair and no other code. Everything is checked before either tree
-moves, a release that fails to start is undone by the guard the system files
-install, and a release that was undone is never tried again.
+A box follows one git ref of the layer repository, its channel: for a supported box, the branch
+`box-release/<series>`, which only a published release moves. The commit at the head of the channel holds a
+pointer file that names a release, and a tag `box-<series>-<release>` must name that same commit. That commit is
+the layer, and the pointer names the commit of core that goes with it. The box runs that pair and no other code.
+Everything is checked before either tree moves, a release that fails to start is undone by the guard the system
+files install, and a release that was undone is never tried again.
 """
 import contextlib
 import fcntl
@@ -39,9 +37,9 @@ POINTER = 'box-release.json'
 # Written by the build of a candidate image and by nothing else: the box never creates it.
 CHANNEL_FILE = 'viin-box-channel'
 STATE_FILE = 'viin-box-state.json'
-# Held by this software and by the roll-back guard (another process) around each change of the state file. It
-# lives in memory (/tmp is a RAM disk on a box), so that taking it needs neither the card open nor a directory
-# of the box user. The guard names the same path.
+# Held by this software and by the roll-back guard (another process) around each change of the state file, at the
+# same path. It lives in memory (/tmp is a RAM disk on a box), so taking it needs neither the card open nor a
+# directory of the box user.
 STATE_LOCK_FILE = '/tmp/viin-box-state.lock'
 STATE_LOCK_WAIT = 120
 VERSION_ROUTE = '/web/webclient/version_info'
@@ -69,10 +67,8 @@ APPLY_FAILED = 'apply_failed'
 UP_TO_DATE = 'up_to_date'
 AVAILABLE = 'available'
 APPLIED = 'applied'
-# What a head was refused for stays true for as long as that head is the same commit. A channel whose head no
-# published release names (RELEASE_UNTAGGED) is not among them: a tag may name it at the next look. Nor is a
-# pointer whose release is not among the tags that name the head (RELEASE_TAG_REASON): it depends on the set of
-# tags, not on the commit, and a tag added later settles it.
+# What a head was refused for stays true while that head is the same commit. Not among them: RELEASE_UNTAGGED (a tag
+# may name the head at the next look) and RELEASE_TAG_REASON (it depends on the set of tags, not on the commit).
 RELEASE_TAG_REASON = 'release_tag'
 REMEMBERED = (NO_POINTER, POINTER_INVALID, CANDIDATE_REFUSED, NEEDS_NEW_IMAGE, CORE_COMMIT_UNAVAILABLE, APPLY_FAILED)
 
@@ -89,6 +85,10 @@ SERVER_TIMEOUT = trust.READ_TIMEOUT
 MAX_ANSWER = 64 * 1024
 MAX_POINTER = 64 * 1024
 MAX_REFUSED = 20
+# Seconds. A look that could not reach the repository is made again after RETRY_FIRST seconds, then after twice the
+# wait before, at most RETRY_LAST, until one reaches it.
+RETRY_FIRST = 60
+RETRY_LAST = 3600
 
 _COMMIT = re.compile(r'[0-9a-f]{40}')
 _SERIES = re.compile(r'[A-Za-z0-9][A-Za-z0-9.-]{0,19}')
@@ -106,6 +106,9 @@ _state_lock = threading.RLock()
 _busy = threading.Lock()
 _activity = []
 _unsettled = []
+# The look that is to be made again: its timer while one is armed, and the wait before it (0 until a look failed).
+_retry = {'timer': None, 'wait': 0}
+_retry_lock = threading.Lock()
 
 
 class _Stop(Exception):
@@ -134,7 +137,10 @@ def _git(tree, *arguments, timeout=LOCAL_TIMEOUT, check=True):
 
 
 def _said(tree, *arguments):
-    """What a git command that changes nothing prints about `tree`, '' when it fails."""
+    """What a git command that changes nothing prints about `tree`.
+
+    :return: the output, or an empty string when the command fails
+    """
     try:
         found = _git(tree, *arguments, check=False)
     except (OSError, subprocess.SubprocessError):
@@ -143,7 +149,10 @@ def _said(tree, *arguments):
 
 
 def _commit(tree, revision='HEAD'):
-    """The commit `revision` names in `tree`, '' when the tree holds no such commit."""
+    """The commit `revision` names in `tree`.
+
+    :return: the commit, or an empty string when the tree holds no such commit
+    """
     name = _said(tree, 'rev-parse', '--quiet', '--verify', f'{revision}^{{commit}}')
     return name if _COMMIT.fullmatch(name) else ''
 
@@ -151,15 +160,17 @@ def _commit(tree, revision='HEAD'):
 def _own_commit(tree):
     """The commit `tree` is at, '' unless it is a git repository of its own.
 
-    A tree that sits inside the repository of something else is never moved:
-    git would move that repository.
+    A tree that sits inside the repository of something else is never moved: git would move that repository.
     """
     top = _said(tree, 'rev-parse', '--show-toplevel')
     return _commit(tree) if top and Path(top).resolve() == tree else ''
 
 
 def _pointer(data):
-    """The release a pointer file names; `_Stop(POINTER_INVALID)` when it names none a box can follow."""
+    """The release a pointer file names.
+
+    :raises _Stop: with ``POINTER_INVALID`` when it names none a box can follow
+    """
     if len(data) > MAX_POINTER:
         raise _Stop(POINTER_INVALID, 'too_large')
     try:
@@ -210,10 +221,13 @@ def state_path():
 
 
 def read_state():
-    """What the box keeps about its releases, and what other parts of the layer keep beside it; {} without a file.
+    """What the box keeps about its releases, and what other parts of the layer keep beside it.
 
-    The guard that undoes a release reads `trial` of this file on its own: a
-    key of that record, once written, keeps its meaning in every later release.
+    The guard that undoes a release reads `trial` of this file on its own: a key of that record keeps its meaning
+    in every later release.
+
+    :return: the state; ``{}`` when there is no file
+    :rtype: dict
     """
     try:
         state = json.loads(state_path().read_bytes().decode())
@@ -241,7 +255,7 @@ def _open_lock_file():
     """A descriptor of the lock file, created when absent.
 
     An existing file is opened without O_CREAT: with `fs.protected_regular` set, opening a file of another
-    user with O_CREAT in a sticky directory is refused even to root. A file that appears meanwhile is opened.
+    user with O_CREAT in a sticky directory is refused even to root.
     """
     flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC
     for _attempt in range(3):
@@ -260,11 +274,10 @@ def _open_lock_file():
 def _state_file_lock():
     """Hold, for the block, the lock the roll-back guard takes around its own changes of the state file.
 
-    The caller holds `_state_lock`. `change_state` takes this lock before it makes the card writable, as the
-    guard does; `_apply` and `_resume` keep the card writable for a whole move and take this lock only around
-    each change of the state file, never while the guard runs or the box service restarts: both take it
-    themselves. The card being open is no lock, so the two orders cannot wait on each other.
-    Raises TimeoutError, an OSError, when the guard holds it for STATE_LOCK_WAIT seconds.
+    The caller holds `_state_lock`. This lock is never held while the guard runs or the box service restarts:
+    both take it themselves.
+
+    :raises TimeoutError: when the guard holds it for ``STATE_LOCK_WAIT`` seconds
     """
     descriptor = _open_lock_file()
     try:
@@ -283,10 +296,11 @@ def _state_file_lock():
 
 
 def change_state(change):
-    """Read the state file, let `change(state)` alter it, write it back, and return it.
+    """Alter the state file with `change(state)` and return the state written.
 
-    Another part of the layer keeps what it must not lose at a restart under a
-    key of its own. Raises OSError when the file cannot be written.
+    :param change: called with the state read; alters it in place and leaves the keys of the other parts of the
+        layer as they are
+    :raises OSError: when the file cannot be written
     """
     with _state_lock, _state_file_lock(), _helpers().writable():
         state = read_state()
@@ -333,7 +347,10 @@ def channel():
 
 
 def release():
-    """The name of the release this box runs, '' when its layer tree names none."""
+    """The name of the release this box runs.
+
+    :return: the name, or an empty string when its layer tree names none
+    """
     return _RUNNING['release']
 
 
@@ -343,7 +360,10 @@ def _image_version(text):
 
 
 def _server_series():
-    """The series of the server of the box, '' when the box has none or the server does not say."""
+    """The series of the server of the box.
+
+    :return: the series, or an empty string when the box has no server or the server does not say
+    """
     server = _helpers().get_odoo_server_url()
     if not server:
         return ''
@@ -376,11 +396,13 @@ def _remote_head(ref):
 
 
 def _release_listing(series):
-    """(head, releases) of the release channel of `series`, from one question to the repository of the layer.
+    """The head of the release channel of `series` and the published releases that name it.
 
-    `releases` holds the names of the published releases of the series (tags `box-<series>-<release>`) that
-    name the commit at `head`. A channel with no such release is `_Stop(RELEASE_UNTAGGED)`: the commit is not
-    looked at, and the next look asks again.
+    :return: ``(head, releases)``; `releases` holds the names of the tags `box-<series>-<release>` that name the
+        commit at `head`
+    :raises _Stop: with ``NO_CHANNEL`` when the channel does not exist, ``RELEASE_UNTAGGED`` when no published
+        release names its head (the commit is not looked at, and the next look asks again), ``UNREACHABLE`` when
+        the repository does not answer
     """
     ref, prefix = _series_channel(series), f'refs/tags/box-{series}-'
     try:
@@ -413,8 +435,8 @@ def _release_listing(series):
 def _clear_locks(tree):
     """Remove the lock files a git command that was cut off left in the repository of `tree`.
 
-    Git refuses to write beside one for ever. Nothing but this file writes these
-    repositories while the box service runs, and it runs one command at a time.
+    Git refuses to write beside one for ever. Nothing but this file writes these repositories while the box
+    service runs, and it runs one command at a time.
     """
     repository = Path(tree, '.git')
     for lock in (*repository.glob('*.lock'), *repository.glob('refs/**/*.lock')):
@@ -454,8 +476,8 @@ def _core_repository_answers():
 def _fetch_core(commit):
     """Have `commit` in the core repository.
 
-    A repository that answers and twice does not give the commit does not
-    serve it; anything else is a network that failed, and is tried again.
+    :raises _Stop: with ``CORE_COMMIT_UNAVAILABLE`` when the repository answers and does not serve the commit,
+        ``UNREACHABLE`` when it does not answer
     """
     if _commit(CORE_TREE, commit):
         return
@@ -476,8 +498,9 @@ def _refusal_key(ref, head):
 def _checked(ref, series, candidate_channel, head, state, again, releases=None):
     """The release at `head` of `ref`, once everything a box needs of it is on the card and checked.
 
-    `releases` are the published releases that name `head`; the pointer must name one of them. It is None on a
-    candidate channel, which is not bound to a published release.
+    :param releases: the published releases that name `head`, one of which the pointer must name; ``None`` on a
+        candidate channel, which is not bound to a published release
+    :raises _Stop: with the state the release is refused for
     """
     if head in state.get('bad', {}):
         raise _Stop(BAD_RELEASE)
@@ -516,8 +539,7 @@ def _listed(series):
 def _look_at(ref, series, candidate_channel, state, again, listing=None):
     """Where the box stands with the channel `ref`: a record with `state`, and `offer` when it can move.
 
-    A candidate channel is read with `_remote_head`, a release channel with `_release_listing`; a caller that
-    asked the release channel already hands over what `_listed` answered.
+    :param listing: what `_listed` answered for a release channel the caller asked already
     """
     look = {'channel': ref, 'series': series, 'head': '', 'release': '', 'reason': ''}
     try:
@@ -545,11 +567,14 @@ def _step(ref, state, reason=''):
 
 
 def _look(state, again):
-    """Look at what the box follows: (record of the look, release to move to or None, whether a candidate
-    box found its channel gone). The `steps` of the record are the channels looked at, the last one deciding.
+    """Look at what the box follows.
 
-    Nothing is asked of the server of the box before the repository of the
-    layer answered: without it there is no release to move to.
+    Nothing is asked of the server of the box before the repository of the layer answered: without it there is
+    no release to move to.
+
+    :return: the record of the look (its `steps` are the channels looked at, the last one deciding), the release
+        to move to or ``None``, and whether a candidate box found its channel gone
+    :rtype: tuple
     """
     steps = []
     own = _series_channel(SERIES)
@@ -608,7 +633,7 @@ def _trial(state):
 
 
 def _promote_now(state, record, promote):
-    """A candidate box that runs, for good, the supported release its series names has nothing left of a candidate."""
+    """Leave the candidate channel once a candidate box runs, for good, the supported release of its series."""
     if promote and record['state'] == UP_TO_DATE and not _RUNNING['candidate'] and not _trial(state):
         _leave_candidate_channel()
 
@@ -616,17 +641,49 @@ def _promote_now(state, record, promote):
 def _leave_candidate_channel():
     _helpers().unlink_file(CHANNEL_FILE)
     _logger.warning(
-        'This box followed a candidate channel that is gone; it now follows the release channel of its series')
+        'The candidate channel of this box is gone; the box follows the release channel of its series')
+
+
+def _look_again_when_unreachable(record):
+    """Make a look that could not reach the repository again, by itself, until one does.
+
+    One timer at a time: a look made while one is armed leaves it as it is, and a look that reached the repository
+    ends the series of retries. A box with no tree of its own to compare (`not_a_repository`) has nothing to retry.
+    """
+    unreachable = record['state'] == UNREACHABLE and record['reason'] != 'not_a_repository'
+    with _retry_lock:
+        if not unreachable:
+            timer, _retry['timer'], _retry['wait'] = _retry['timer'], None, 0
+            if timer:
+                timer.cancel()
+            return
+        if _retry['timer']:
+            return
+        _retry['wait'] = min(_retry['wait'] * 2, RETRY_LAST) if _retry['wait'] else RETRY_FIRST
+        timer = threading.Timer(_retry['wait'], _retry_look)
+        timer.name = 'ViinUpdateRetry'
+        timer.daemon = True
+        _retry['timer'] = timer
+        timer.start()
+
+
+def _retry_look():
+    with _retry_lock:
+        _retry['timer'] = None
+    check()
 
 
 def check(apply=None, again=False):
-    """Look for a release on the channel of the box, now; return `status()`.
+    """Look for a release on the channel of the box, now; one look at a time.
 
-    A release that is found and fully checked is applied when `apply` is true,
-    kept as an offer when it is false, and left to the setting of the box
-    (`auto_update`) when it is None. `again` checks anew a head that was
-    refused before; a release the box undid is never applied again. One look
-    at a time: a call that comes during one changes nothing.
+    A call that comes during a look changes nothing. A look that could not reach the repository is made again by
+    itself until one reaches it.
+
+    :param apply: whether a release that is found and fully checked is applied (true), kept as an offer (false),
+        or left to the setting of the box, `auto_update` (``None``)
+    :param again: check anew a head that was refused before; a release the box undid is never applied again
+    :return: `status()`
+    :rtype: dict
     """
     if not _busy.acquire(blocking=False):
         return status()
@@ -634,6 +691,7 @@ def check(apply=None, again=False):
         _activity[:] = ['checking']
         state = read_state()
         record, offer, promote = _look(state, again)
+        _look_again_when_unreachable(record)
         waits = bool(offer and _trial(state))
         if waits:
             record['reason'] = 'trial_pending'
@@ -693,8 +751,8 @@ def _move(commits):
 def _apply(offer):
     """Move both trees to the release `offer` names, then restart the box into it.
 
-    The pair to go back to is written down before either tree moves: from
-    there on the guard can undo the move without anything of the layer.
+    The pair to go back to is recorded first, so the guard can undo a move that is cut short without any of the
+    layer.
     """
     previous = {key: _RUNNING[key] for key in ('layer_commit', 'odoo_commit', 'release')}
     if not (previous['layer_commit'] and previous['odoo_commit']):
@@ -757,7 +815,7 @@ def _fail_apply(offer, reason):
 def _count_start():
     """Have the guard count the start the box is about to make by itself, as it counts those of the system.
 
-    The caller holds the card open: the guard, which opens it on its own, then leaves it so.
+    The caller holds the card open: the guard, which opens it on its own, then leaves it open.
     """
     if os.access(GUARD, os.X_OK):
         with contextlib.suppress(OSError, subprocess.SubprocessError):
@@ -806,7 +864,10 @@ def _resume():
 
 
 def _settle():
-    """Mark the release on trial good once the box runs normally; True when no trial is left to settle."""
+    """Mark the release on trial good once the box runs normally.
+
+    :return: whether no trial is left to settle
+    """
     trial = _trial(read_state())
     if not trial or trial.get('phase') != APPLIED_PHASE:
         return True
@@ -821,27 +882,20 @@ def _settle():
 
     change_state(lambda state: state.update(trial=None))
     if _runs(target):
-        _logger.warning('Release %s ran normally for its first minutes: it is marked good', target.get('release'))
+        _logger.warning('Release %s runs normally: it is marked good', target.get('release'))
         if trial.get('promote'):
             _leave_candidate_channel()
     return True
 
 
 def _look_without_server():
-    """Look for a release now when the box has no server.
-
-    Core looks at its start only when the box has a server, so a box that is not
-    paired yet would wait for the night. This is the look core would take: the
-    same function, on its own thread, asking nothing but the release channel
-    (`_look` asks the server of the box only when there is one).
-    """
+    """Look for a release now when the box has no server: core takes its look only when the box has one."""
     if not _helpers().get_odoo_server_url():
         threading.Thread(target=check, name='ViinUpdateCheck', daemon=True).start()
 
 
 class _Keeper(threading.Thread):
-    """Settles, once the box has started, what an update left open, and takes the first look of a box without a
-    server."""
+    """Settles what an update left open once the box has started, and takes the first look of a box without a server."""
 
     def __init__(self):
         super().__init__(name='ViinReleaseKeeper', daemon=True)
@@ -868,22 +922,23 @@ class _Keeper(threading.Thread):
 def status():
     """What the box says of its software.
 
-    {'release', 'series', 'candidate_box', 'channel', 'running', 'auto_update',
-    'busy', 'last_check', 'offered', 'trial', 'rolled_back', 'bad'}:
+    :return: a dict with the keys
 
-    * 'release' - the name of the release the box runs; a candidate's is, or ends in, `rc.<number>`;
-    * 'candidate_box' - the box was written from a candidate image and is not for production use;
-    * 'running' - {'layer_commit', 'odoo_commit', 'release', 'candidate', 'pointer', 'matches_pointer'}:
-      the pair the box runs, whether its layer tree names a release ('ok', 'missing', 'invalid') and
-      whether core is at the commit that release names;
-    * 'busy' - 'checking', 'applying' or '';
-    * 'last_check' - None, or {'at', 'state', 'reason', 'channel', 'head', 'release', 'server_series',
-      'steps'}; `steps` holds one such record per channel looked at, the last being the one that decided;
-    * 'offered' - None, or the release found, checked and not applied;
-    * 'trial' - None, or {'release', 'phase', 'starts', 'since'} of the release that is not marked good yet;
-    * 'rolled_back' - None, or {'release', 'layer_commit', 'odoo_commit', 'at', 'starts'} of the last
-      release that was undone;
-    * 'bad' - the releases that were undone and are never applied again.
+        * ``release`` - the name of the release the box runs; a candidate's is, or ends in, `rc.<number>`
+        * ``series``, ``channel``, ``auto_update``
+        * ``candidate_box`` - the box was written from a candidate image and is not for production use
+        * ``running`` - ``{layer_commit, odoo_commit, release, candidate, pointer, matches_pointer}``: the pair
+          the box runs, whether its layer tree names a release (``pointer`` is ``ok``, ``missing`` or
+          ``invalid``) and whether core is at the commit that release names
+        * ``busy`` - ``checking``, ``applying`` or an empty string
+        * ``last_check`` - ``None``, or ``{at, state, reason, channel, head, release, server_series, steps}``;
+          `steps` holds one such record per channel looked at, the last being the one that decided
+        * ``offered`` - ``None``, or the release found, checked and not applied
+        * ``trial`` - ``None``, or ``{release, phase, starts, since}`` of the release not marked good yet
+        * ``rolled_back`` - ``None``, or ``{release, layer_commit, odoo_commit, at, starts}`` of the last release
+          that was undone
+        * ``bad`` - the releases that were undone and are never applied again
+    :rtype: dict
     """
     state = read_state()
     trial = _trial(state)

@@ -1,4 +1,4 @@
-"""What the box says of itself to its server: its address, its release and its hardware address (rows 7, 11, 17)."""
+"""What the box says of itself to its server: its address, its release and its hardware address."""
 import json
 import tempfile
 from pathlib import Path
@@ -10,7 +10,9 @@ import services_common as box
 CREDENTIAL = 'suite-credential-identity'
 OWN_NAME = 'box.shop.example'
 VIINDOO_NAME = 'k3x9.iot.viindoo.example'
-SITE_ADDRESS = '192.168.1.50'
+SITE_ADDRESS = '192.0.2.50'
+OTHER_SITE_ADDRESS = '192.0.2.60'
+# The test needs a link-local address: the box never reports one.
 LINK_LOCAL = '169.254.7.7'
 # The wildcard name of the certificates of core's vendor, as core keeps it once a server handed it over.
 VENDOR_ZONE = '*.vendor-zone.example'
@@ -32,7 +34,10 @@ def release_mark():
 
 
 def first_report_of_a_start(port):
-    """Start a box beside its server; give what the first report of the start told the server of the box."""
+    """Start a box beside its server.
+
+    :return: the ``ip`` and the ``version`` the first report of the start told the server
+    """
     server = common.FakeServer(port=port, channel='box-suite-channel')
     common.start()
     common.wait_until(lambda: common.reported_credentials(server), 'the first report of the box')
@@ -41,7 +46,10 @@ def first_report_of_a_start(port):
 
 
 def first_report_of_a_start_on_the_site_network(port):
-    """Start a box whose core finds it at the address of the site; give what its first report told the server."""
+    """Start a box whose core finds it at the address of the site.
+
+    :return: the ``ip`` its first report told the server
+    """
     configuration = common.configuration_file(
         tempfile.mkdtemp(prefix='box-suite-'), core_changes=CORE_FINDS_THE_SITE_ADDRESS)
     with box.network({'eth0': SITE_ADDRESS}):
@@ -55,10 +63,13 @@ def first_report_of_a_start_on_the_site_network(port):
 class IdentityCase(common.BoxCase):
 
     def reported(self):
-        """What the box tells a server of itself in its next report, as core's device loop sends it."""
+        """Have the box report to a server, as core's device loop does.
+
+        :return: what the report tells of the box
+        """
         server = self.server(channel='box-suite-channel')
         manager = common.core('main').manager
-        # Core's device loop looks at the address, the version and the hardware address of the box every three seconds.
+        # Core's device loop reads the address, the version and the hardware address of the box before it reports.
         manager._get_changes_to_send()
         self.report_to(server)
         reports = [request for request in server.requests if request['path'] == '/iot/setup']
@@ -157,7 +168,7 @@ class HardwareAddressCase(IdentityCase):
 
     def reported_on(self, board):
         # Core, alone, gives the address of whichever interface carries the traffic at that moment.
-        with board.patched(), box.network({'wlan0': '192.168.1.60'}):
+        with board.patched(), box.network({'wlan0': OTHER_SITE_ADDRESS}):
             return self.reported()['identifier']
 
 
@@ -202,7 +213,7 @@ class TestCommandsOfTheLiveChannel(HardwareAddressCase):
         board.interface('eth0', WIRED)
         board.interface('wlan0', WIRELESS, wireless=True)
         self.enterContext(board.patched())
-        self.enterContext(box.network({'wlan0': '192.168.1.60'}))
+        self.enterContext(box.network({'wlan0': OTHER_SITE_ADDRESS}))
 
     def command_to(self, address, number):
         common.core('websocket_client').on_message(None, json.dumps([{'message': {'type': 'iot_action', 'payload': {

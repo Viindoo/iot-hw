@@ -98,7 +98,7 @@ class TestLogLevels(common.BoxCase):
         self.assertEqual(answer.get('status'), 'success')
         self.assertEqual(logging.getLogger().level, logging.ERROR)
 
-    def test_debug_level_of_the_box_software_is_still_set(self):
+    def test_debug_level_of_the_box_software_is_set(self):
         answer = self.set_level(SOFTWARE_LOGGER, 'debug')
 
         self.assertEqual(answer.get('status'), 'success')
@@ -117,7 +117,11 @@ class TestVersionAndUpdateRoutes(common.BoxCase):
         common.wait_until(lambda: not update.status()['busy'], 'the look for a release to end')
 
     def remotes_asked(self, commands):
-        """The places the git commands of the box fetched from or asked, each as written in the command."""
+        """Give the places the git commands of the box fetched from or asked, each as written in the command.
+
+        :param commands: the git commands the box ran, each a list of words
+        :rtype: list
+        """
         return [part for command in commands for part in command if '://' in part or part == 'origin']
 
     def test_version_route_answers_the_release_the_box_runs(self):

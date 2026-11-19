@@ -1,13 +1,10 @@
 """The devices of the box as the installer sees them, and the test of each one with no server.
 
-Each test runs what core itself runs for that device: the status ticket of a
-receipt printer, a small label in ZPL for a label printer, the test page of
-the print server for an office printer, one reading of a scale. The ticket and
-the label go to the print queue through `lp`, as core's `print_raw` sends what
-the point of sale prints, so that the box learns the number of its own test
-job. A scanner, a keyboard and a footswitch are tested by the page of the box
-itself, which listens to them as core lets any page do. A test changes no
-setting.
+Each test runs what core itself runs for that device: the status ticket of a receipt printer, a small label in ZPL
+for a label printer, the test page of the print server for an office printer, one reading of a scale. The ticket
+and the label go to the print queue through `lp`, as core's `print_raw` sends what the point of sale prints, so
+that the box learns the number of its own test job. A scanner, a keyboard and a footswitch are tested by the page
+of the box itself, which listens to them as core lets any page do. A test changes no setting.
 """
 import copy
 import logging
@@ -32,28 +29,23 @@ LABEL = 'label_printer'
 OFFICE = 'office_printer'
 SCANNER_ACTION = 'update_is_scanner'
 SCALE_ACTION = 'read_once'
-# A test that has not ended after this many seconds is answered as failed: `print_server_silent` for a printer,
-# whose test calls only the print server of the box and never the printer itself, `timeout` for a scale. The
-# device goes on on its own; a test not sent yet is not sent, and a test job the box knows by its number is
-# cancelled, so that it neither prints later nor waits in front of real tickets. The seconds count from the start
-# of the test itself, after the connection to the print server is open.
+# A test that has not ended after this many seconds, counted from its start, is answered as failed:
+# `print_server_silent` for a printer, `timeout` for a scale. A test job the box knows by its number is cancelled, so
+# that it neither prints later nor waits in front of real tickets.
 TEST_TIMEOUT = 15
 # The job name of a test print sent through `lp`, for a person reading the print queue. The box itself knows its
 # test job only by the number the print server gives it: by default the print server keeps the names of jobs
 # private, so a name cannot tell the test from a ticket.
 TEST_JOB_NAME = 'Viindoo IoT - test'
-# How long, after the device call, the box follows its test job and the print queue to see whether the printer
-# took the job, and how often it looks. The print server sets the queue reason below while it opens the printer
-# for the job it is printing, and clears it once the printer is connected. A printer counts as reached only on
-# positive evidence: the job completed, or, while the job itself is processing, the queue was seen connecting and
-# later not. A reason seen while the job is still pending belongs to a job ahead of it, and a queue that never
-# showed the reason proves nothing, whatever its message says.
+# The box follows its test job and the print queue for FOLLOW_WINDOW seconds, every FOLLOW_STEP, to see whether the
+# printer took the job. The print server sets CONNECTING as the queue reason while it opens the printer and clears it
+# once connected: a reason seen while the job is still pending belongs to a job ahead, and no reason proves nothing.
 FOLLOW_WINDOW = 30
 FOLLOW_STEP = 0.5
 CONNECTING = 'connecting-to-device'
-# The follow-up runs in a thread of its own so that a print server that stops answering cannot hold the request:
-# the request waits FOLLOW_WINDOW + FOLLOW_MARGIN seconds for it, then CANCEL_WAIT seconds for the cancelling of
-# the test job on a connection of its own, and answers `print_server_silent`.
+# The follow-up runs in a thread of its own so that a print server that stops answering cannot hold the request: the
+# request waits FOLLOW_WINDOW + FOLLOW_MARGIN seconds for it, then CANCEL_WAIT seconds for the cancelling of the test
+# job on a connection of its own.
 FOLLOW_MARGIN = 3
 CANCEL_WAIT = 2
 # The device address schemes of the print server whose host part is the network address of the printer.
@@ -84,12 +76,12 @@ _left_behind = {}
 _testing_lock = threading.Lock()
 # Taking a printer for a label printer looks at the queues and then adds one: two presses must not interleave.
 _queues_lock = threading.Lock()
-# The page asks for the devices about every 15 seconds: the answer of the print server is kept for that long,
-# and one request waits at most QUEUES_WAIT seconds for it, then shows the last answer it has.
+# The page asks for the devices repeatedly: the answer of the print server is kept for QUEUES_FRESH seconds, and one
+# request waits at most QUEUES_WAIT seconds for it, then shows the last answer it has.
 QUEUES_FRESH = 15
 QUEUES_WAIT = 3
 # The last answer of the print server to `getPrinters` (None until there is one), when it came (monotonic, None
-# when it is to be asked again), the thread now asking, and a count that ends an answer still on its way.
+# when it is to be asked again), the thread asking, and a count that ends an answer still on its way.
 _known = {'queues': None, 'at': None, 'thread': None, 'generation': 0}
 _known_lock = threading.Lock()
 
@@ -103,10 +95,11 @@ def _text(value, limit=MAX_TEXT):
 
 
 def printer_kind(device):
-    """(kind core gave the printer, why, what decided) - why is `command_set`, `name` or `default`.
+    """The kind core gave the printer, and what decided it.
 
-    `command_set`: the printer announces a command language; `name`: its name
-    says it; `default`: nothing said otherwise, so it is an office printer.
+    :return: ``(kind, why, evidence)``; `why` is ``command_set`` (the printer announces a command language),
+        ``name`` (its name says it), ``default`` (nothing said otherwise, so it is an office printer), or
+        ``unknown`` (core's kind differs from what the printer says)
     """
     subtype = getattr(device, 'device_subtype', '') or ''
     announced = (device.dev or {}).get('device-id', '') if isinstance(device.dev, dict) else ''
@@ -148,10 +141,12 @@ def _how_tested(device):
 def describe(device, queues=None):
     """What the Devices panel of the box shows of one device.
 
-    `queues` is what the print server answered to `getPrinters`; the `printer`
-    entry of an office printer holds `label_queue`, the print queue that
-    already stands for it as a label printer (empty when it has none).
-    `connection` of a printer is `network`, `usb`, `serial` or '' (see `_connection_of`).
+    :param queues: what the print server answered to `getPrinters`; the ``printer`` entry of an office printer
+        holds ``label_queue``, the print queue that already stands for it as a label printer (empty when it has
+        none)
+    :return: the description; ``connection`` of a printer is ``network``, ``usb``, ``serial`` or an empty string
+        (see `_connection_of`)
+    :rtype: dict
     """
     described = {
         'identifier': device.device_identifier,
@@ -184,14 +179,8 @@ def describe(device, queues=None):
 def _connection_of(device):
     """How a device is connected, as the Devices panel names it; never the device address of a printer.
 
-    A printer is named as its print test names it (`_connected_by`), from its
-    device address. Core sets `device-class` itself only for a print queue it
-    takes from the list of queues (one whose name is not the one core derives
-    from its address): `direct` when the address holds `usb`, else `network`,
-    a serial or vendor address too; such a queue keeps its address in
-    `device-uri`, and `url` is its name. A printer core discovered keeps the
-    class the print server gives it (`serial`, `direct`, `network`), and its
-    address is `url`.
+    A printer is named as its print test names it (`_connected_by`), from its device address: `device-uri` for a
+    print queue core takes from the list of queues, `url` for a printer core discovered.
     """
     if device.device_type != 'printer':
         return device.device_connection
@@ -218,10 +207,8 @@ def devices():
 def _known_queues():
     """What the print server answered to `getPrinters`, asked at most once per QUEUES_FRESH seconds.
 
-    The question runs in a thread of its own and is waited for QUEUES_WAIT
-    seconds; a print server that does not answer in time leaves the last answer
-    (None if there is none) and the next call joins the question still on its
-    way instead of opening another connection.
+    A call waits at most QUEUES_WAIT seconds for the answer; a print server that does not answer in time leaves
+    the last answer (``None`` if there is none).
     """
     with _known_lock:
         at = _known['at']
@@ -273,30 +260,22 @@ def _answer(result, kind='', **detail):
 def test(identifier):
     """Test the device `identifier` the way core uses it, with no server.
 
-    {'status': ok, failed or unsupported, 'kind', 'detail'}; `detail` of a
-    printer is what its print queue answered, of a scale the value (and the
-    `unit`, when the driver gives one) and the status it read. Its `reason`
-    says why a test is not ok, and what the box knows of the test print of an
-    ok printer test.
-    A printer test follows and cancels only the job whose number the print
-    server gave for this test, never another print of the queue. It answers
-    `taken` only on positive evidence that the printer took that job: the job
-    completed, or, while the job itself was processing, the queue was seen
-    connecting to the printer and later not. When that evidence does not come
-    within FOLLOW_WINDOW seconds after the device call, the answer is
-    `printer_not_reached` (with how the printer is connected and, for a network
-    printer, its address) and the test job is cancelled. A test print the print
-    server took without giving its number is answered ok `sent_not_followed`:
-    no job is followed or cancelled, and whether it printed is seen on the
-    printer.
-    A printer test whose device call has not ended within TEST_TIMEOUT seconds,
-    or whose follow-up is still running FOLLOW_MARGIN seconds after its window,
-    answers `print_server_silent`; a scale reading that has not ended within
-    TEST_TIMEOUT seconds answers `timeout`. Either way a test print not sent yet
-    is not sent, a test job the box knows by its number is cancelled, and the
-    device is freed. While a call to the print server left by such a test still
-    has no answer, a printer test answers `print_server_silent` at once,
-    without asking the print server.
+    A device does one test at a time. A printer test follows and cancels only the job whose number the print
+    server gave for this test, never another print of the queue. When a test runs out of time, a test print not
+    sent yet is not sent, a test job the box knows by its number is cancelled, and the device is freed.
+
+    :return: ``{'status', 'kind', 'detail'}``; `status` is ok, failed or unsupported. `detail` of a printer is
+        what its print queue answered, of a scale the value (and the ``unit``, when the driver gives one) and the
+        status it read; its ``reason`` says why a test is not ok, and what the box knows of the test print of an
+        ok printer test: ``taken`` only on positive evidence that the printer took the job,
+        ``printer_not_reached`` when that evidence does not come within FOLLOW_WINDOW seconds after the device
+        call (with how the printer is connected and, for a network printer, its address),
+        ``sent_not_followed`` when the print server took the print without giving its number (whether it printed
+        is seen on the printer), ``print_server_silent`` when the print server does not answer within
+        TEST_TIMEOUT seconds, when the follow-up outlasts its window by FOLLOW_MARGIN seconds, or while a call
+        left by an earlier test has no answer, and ``timeout`` for a scale reading not ended within TEST_TIMEOUT
+        seconds
+    :rtype: dict
     """
     device = _devices().get(identifier) if isinstance(identifier, str) else None
     if device is None:
@@ -340,10 +319,9 @@ def _leave_behind(identifier, threads):
 class _Trial:
     """The test job of a printer test, shared by the request and the thread that makes the device call.
 
-    The job is only ever the number the print server gave for this test. Once
-    the request has stopped waiting for that thread, the thread sends no test
-    and keeps no job of its own: it cancels a test job it learns the number of
-    later.
+    The job is only ever the number the print server gave for this test. Once the request has stopped waiting for
+    that thread, the thread sends no test and keeps no job of its own: it cancels a test job it learns the number
+    of later.
     """
 
     def __init__(self):
@@ -357,7 +335,7 @@ class _Trial:
             return not self._abandoned
 
     def holds(self, number):
-        """Keep `number` as the test job; False when the request has already stopped waiting."""
+        """Keep `number` as the test job; false when the request has already stopped waiting."""
         with self._lock:
             if self._abandoned:
                 return False
@@ -365,7 +343,10 @@ class _Trial:
             return True
 
     def abandon(self):
-        """Stop waiting: the number of the test job the print server already holds, None when none is known."""
+        """Stop waiting.
+
+        :return: the number of the test job the print server already holds, ``None`` when none is known
+        """
         with self._lock:
             self._abandoned = True
             return self._job
@@ -435,7 +416,10 @@ def _run_test(device, kind):
 
 
 def _cancel_on_new_connection(number):
-    """Try to cancel the job `number` on a connection of its own, for at most CANCEL_WAIT seconds: the thread."""
+    """Try to cancel the job `number` on a connection of its own, waiting at most CANCEL_WAIT seconds.
+
+    :return: the thread that cancels
+    """
     def cancel():
         try:
             _own_connection().cancelJob(number)
@@ -449,7 +433,12 @@ def _cancel_on_new_connection(number):
 
 
 def _scale_test(device, kind):
-    device.action({'action': SCALE_ACTION})
+    read = True
+    try:
+        device.action({'action': SCALE_ACTION})
+    except Exception as error:
+        read = False
+        _log_unread_scale(device.device_identifier, error)
     data = device.data if isinstance(device.data, dict) else {}
     status = data.get('status') if isinstance(data.get('status'), dict) else {}
     status = {
@@ -460,6 +449,8 @@ def _scale_test(device, kind):
     value = data.get('value')
     # Core's scale drivers give no unit (the scale's own menu sets it): it is passed on only when the driver does.
     unit = _text(data.get('unit'), MAX_UNIT) if isinstance(data.get('unit'), str) else ''
+    if not read:
+        return _answer(FAILED, kind, reason='no_reading', value=None, status=status)
     if status['status'] == 'error' or not isinstance(value, (int, float)) or isinstance(value, bool):
         return _answer(FAILED, kind, reason='no_reading', value=value if isinstance(value, (int, float)) else None,
                        status=status)
@@ -468,14 +459,36 @@ def _scale_test(device, kind):
     return _answer(OK, kind, value=value, status=status)
 
 
+# The scales whose reading failed, each as (device, kind of error): the first of each is logged, with no traceback.
+MAX_UNREAD_SCALES = 256
+_unread_scales = set()
+_unread_scales_lock = threading.Lock()
+
+
+def _log_unread_scale(identifier, error):
+    """Log that the scale `identifier` gave no reading, once per kind of error; later presses log at debug.
+
+    A scale whose port never opened fails the same way at each press: the answer says it, and a traceback adds
+    nothing to it.
+    """
+    key = (str(identifier)[:MAX_TEXT], type(error).__name__)
+    with _unread_scales_lock:
+        first = key not in _unread_scales
+        if first:
+            if len(_unread_scales) >= MAX_UNREAD_SCALES:
+                _unread_scales.clear()
+            _unread_scales.add(key)
+    if first:
+        _logger.warning('The scale %s gave no reading (%s)', *key)
+    else:
+        _logger.debug('The scale %s gave no reading again (%s)', *key)
+
+
 def _own_connection():
     """A connection to the print server that only the caller uses.
 
-    The connection core shares is guarded by a lock core holds for as long as
-    its scan of the printers lasts (a scan asks every print backend, which can
-    take many seconds), so a test that waited for that lock would wait inside
-    its own time limit. A connection of its own needs no lock: the print server
-    serves each connection alone.
+    The connection core shares is guarded by a lock core holds for as long as its scan of the printers lasts, so a
+    test that waited for that lock would wait inside its own time limit.
     """
     import cups
     return cups.Connection()
@@ -510,10 +523,8 @@ def _label(device):
 def _status_ticket(device):
     """The status ticket core's `print_status` composes for `device`, kept instead of printed.
 
-    `print_status` hands its ticket to `print_raw`, which tells no one the
-    number of the job: it runs here on a copy of the driver whose own
-    `print_raw` keeps what it is given. The driver itself, which the point of
-    sale prints through at the same time, is not changed.
+    It runs on a copy of the driver, which the point of sale prints through at the same time and which is not
+    changed: `print_raw` of core tells no one the number of the job.
     """
     composed = []
     twin = copy.copy(device)
@@ -525,9 +536,10 @@ def _status_ticket(device):
 def _lp(queue, data):
     """Send `data` to the print queue `queue` with the command core's `print_raw` runs, `lp -d <queue>`.
 
-    (whether `lp` took it, the number of its job or None). `lp` names the job
-    in its request id `<queue>-<number>`; TEST_JOB_NAME only names the job for
-    a person reading the queue.
+    The job is known by the request id `lp` prints, `<queue>-<number>`; TEST_JOB_NAME only names the job for a
+    person reading the queue.
+
+    :return: ``(whether lp took it, the number of its job or None)``
     """
     process = subprocess.run(
         ['lp', '-d', queue, '-t', TEST_JOB_NAME], input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -546,14 +558,15 @@ def _shown(queue, message=True):
 
 
 def _connected_by(device_uri):
-    """(how the printer is connected, its address) from the device address of a print queue.
+    """How the printer is connected, from the device address of a print queue.
 
-    The way is `usb`, `network`, `serial`, or '' when the address says none of
-    them. Only the schemes whose host part is the address of the printer itself
-    (NETWORK_SCHEMES) make a network printer; its address is host[:port] as
-    written in the device address, with no user name, password or path. No
-    other way gives an address, nor does any other scheme (a vendor backend, a
-    service name to be looked up, a class of queues).
+    Only the schemes whose host part is the address of the printer itself (NETWORK_SCHEMES) make a network
+    printer; no other scheme (a vendor backend, a service name to be looked up, a class of queues) gives an
+    address.
+
+    :return: ``(way, address)``; the way is ``usb``, ``network``, ``serial``, or an empty string when the device
+        address says none of them; the address is host[:port] as written in the device address, with no user
+        name, password or path, and is empty for any way but ``network``
     """
     uri = str(device_uri or '')
     scheme = uri.split(':', 1)[0].lower()
@@ -578,15 +591,14 @@ def _is_connecting(reasons):
 
 
 def _printer_test(device, kind, connection, trial):
-    """Hand a test job to the queue of `device`: a final answer, or `_Sent` once the print server holds the job.
+    """Hand a test job to the queue of `device`.
 
-    The test job is known only by the number the print server gives for it:
-    the one `printTestPage` returns for an office printer, the one `lp`
-    reports for the status ticket or the label. A test `lp` took without a
-    number answers `sent_not_followed`, and no job is followed or cancelled:
-    the queue may hold tickets of the point of sale sent in the same moment.
-    Once `trial` is abandoned the test is not sent, and a test job whose
-    number comes after that is cancelled here, on this same connection.
+    The test job is known only by the number the print server gives for it. A test `lp` took without a number
+    answers `sent_not_followed`, and no job is followed or cancelled: the queue may hold tickets of the point of
+    sale sent in the same moment. Once `trial` is abandoned the test is not sent, and a test job whose number
+    comes after that is cancelled.
+
+    :return: a final answer, or `_Sent` once the print server holds the job
     """
     queue = device.device_identifier
     try:
@@ -627,16 +639,11 @@ def _printer_test(device, kind, connection, trial):
 def _follow_job(connection, kind, queue, number):
     """Follow the test job `number` and its queue for FOLLOW_WINDOW seconds, and answer whether the printer took it.
 
-    A completed job was taken. A job that is processing was taken once the
-    queue, while this job was processing, has been seen connecting to the
-    printer and no longer is (a job is already processing while its filters
-    run, before the print server tries the printer). The queue connecting
-    while this job is still pending is opening the printer for a job ahead of
-    it, and says nothing about this one. A job that ends stopped, canceled or
-    aborted is a failure.
-    When the window ends with no such evidence, whatever the job state (pending
-    or processing) and the reasons or message of the queue, the printer was not
-    reached: this job only is cancelled and the answer is `printer_not_reached`.
+    A completed job was taken. A processing job was taken once the queue, while this job was processing, was seen
+    connecting to the printer and then not (a job is processing while its filters run, before the print server
+    tries the printer). A queue connecting while this job is still pending is opening the printer for a job ahead
+    of it. A job that ends stopped, canceled or aborted is a failure. When the window ends with no such evidence
+    the printer was not reached: this job only is cancelled and the answer is `printer_not_reached`.
     """
     deadline = time.monotonic() + FOLLOW_WINDOW
     seen_connecting = False
@@ -671,9 +678,11 @@ def _follow_job(connection, kind, queue, number):
 def use_as(identifier, is_scanner):
     """Take a keyboard device for a scanner, or a scanner for a keyboard, with core's own driver action.
 
-    {'status': 'switched', 'kind'}, or {'status': 'refused', 'reason':
-    not_connected, not_switchable or invalid_choice}. The box keeps the choice
-    across its restarts and has its server told at once.
+    The box keeps the choice across its restarts and has its server told at once.
+
+    :return: ``{'status': 'switched', 'kind'}``, or ``{'status': 'refused', 'reason'}`` with a reason of
+        not_connected, not_switchable or invalid_choice
+    :rtype: dict
     """
     if not isinstance(is_scanner, bool):
         return {'status': 'refused', 'reason': 'invalid_choice'}
@@ -685,7 +694,7 @@ def use_as(identifier, is_scanner):
     device.action({'action': SCANNER_ACTION, 'is_scanner': is_scanner})
     # Core reports a device when the list of devices changes, and the list holds the same device.
     reporting.request_report()
-    _logger.info('The device %s is now used as a %s', identifier, device.device_type)
+    _logger.info('The device %s is used as a %s', identifier, device.device_type)
     return {'status': 'switched', 'kind': device.device_type}
 
 
@@ -710,14 +719,15 @@ def _label_queue_of(device, queues):
 def make_label_printer(identifier):
     """Have core take an office printer for the label printer it is, by a second print queue whose name says ZPL.
 
-    The queue the device stands for is never touched: the device keeps
-    printing through it, and core keeps reporting it, until the printer is
-    unplugged. Core finds the new queue at its next look at the printers,
-    within two minutes, takes it for a label printer by its name, and the
-    server is told then. A printer that already has such a queue gets no
-    other. {'status': 'added', 'queue'}, or {'status': 'refused', 'reason':
-    not_connected, not_office_printer, queue_missing or already_added (+
-    `queue`, the label queue the printer already has)}.
+    The queue the device stands for is never touched: the device keeps printing through it, and core keeps
+    reporting it, until the printer is unplugged. Core finds the new queue at its next look at the printers, takes
+    it for a label printer by its name, and the server is told then. A printer that already has such a queue gets
+    no other.
+
+    :return: ``{'status': 'added', 'queue'}``, or ``{'status': 'refused', 'reason'}`` with a reason of
+        not_connected, not_office_printer, queue_missing or already_added (plus ``queue``, the label queue the
+        printer already has)
+    :rtype: dict
     """
     device = _devices().get(identifier) if isinstance(identifier, str) else None
     if device is None:

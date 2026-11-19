@@ -28,9 +28,8 @@ NO_STORE = [('Cache-Control', 'no-store')]
 def _contained(endpoint):
     """Decorator of a route: an error the route did not foresee is answered BOX_ERROR.
 
-    Left to the framework, the error would be logged and sent back with its
-    message, which may quote what the caller sent. Only its kind and the line
-    that raised it are logged.
+    The framework would send the error back with its message, which may quote
+    what the caller sent: only its kind and the line that raised it are logged.
     """
     @functools.wraps(endpoint)
     def contained(*args, **kwargs):
@@ -54,9 +53,12 @@ class BoxServices(http.Controller):
     @_contained
     @lock.refusing_other_sites
     def status(self, refresh=None):
-        """What the page of the box shows, with the self-test: `selftest.status`. `refresh=1` looks at the server
-        anew even when it was looked at a moment ago. The page reads it regularly while it is shown: each read is
-        a use of the page, noted by `page_use`."""
+        """What the page of the box shows, with the self-test: `selftest.status`.
+
+        Each read is a use of the page, noted by `page_use`.
+
+        :param refresh: ``'1'`` looks at the server anew even when it was looked at a moment ago
+        """
         page_use.note(request.httprequest)
         return request.make_json_response(selftest.status(refresh=refresh == '1'), headers=NO_STORE)
 
@@ -78,8 +80,8 @@ class BoxServices(http.Controller):
     def clock(self, action='read', server_url=None):
         """Read the time of the server beside the one of the box (`read`), or set the box to it (`apply`).
 
-        The answers of `selftest.read_server_clock` and `selftest.set_clock_from_server`;
-        {'status': 'refused', 'reason': 'invalid_action'} for any other action.
+        :return: the answer of `selftest.read_server_clock` or `selftest.set_clock_from_server`;
+            ``{'status': 'refused', 'reason': 'invalid_action'}`` for any other action
         """
         if action not in CLOCK_ACTIONS:
             return {'status': 'refused', 'reason': 'invalid_action'}
@@ -114,9 +116,11 @@ class BoxServices(http.Controller):
     def software_update(self, action=None, enabled=None):
         """Look for a release now (`check`), apply the one found (`apply`), or turn automatic updates on or off.
 
-        {'status': 'started' or 'saved', 'update': `update.status()`}; {'status':
-        'refused', 'reason': 'invalid_action' or 'invalid_choice'}; on a paired
-        box `apply` and `auto_update` need the unlock proof.
+        On a paired box `apply` and `auto_update` need the unlock proof.
+
+        :param enabled: for `auto_update`, whether automatic updates are on
+        :return: ``{'status': 'started' or 'saved', 'update': ...}`` with the status of the update;
+            ``{'status': 'refused', 'reason': 'invalid_action' or 'invalid_choice'}``
         """
         if action not in UPDATE_ACTIONS:
             return {'status': 'refused', 'reason': 'invalid_action'}
@@ -129,5 +133,5 @@ class BoxServices(http.Controller):
         if not isinstance(enabled, bool):
             return {'status': 'refused', 'reason': 'invalid_choice'}
         update.set_auto_update(enabled)
-        _logger.info('Automatic updates of the box software are now %s', 'on' if enabled else 'off')
+        _logger.info('Automatic updates of the box software are %s', 'on' if enabled else 'off')
         return {'status': 'saved', 'update': update.status()}
