@@ -146,7 +146,8 @@ When the prompt returns, the card is written.
 
 When the box starts for the first time it gives itself a master password of its own (random, shown nowhere) and a
 host name `viindoo-iot-<last 4 characters of the serial number of the board>` (for example `viindoo-iot-1a2b`; the
-host name never changes afterwards), makes its own certificate, and announces its page on the local network. While
+host name never changes afterwards), makes its own certificate and its own SSH host key (the image holds none, so no
+two boxes share one), and announces its page on the local network. While
 the box software starts, every address of the box shows the page "The box is not ready yet", which checks again by
 itself and opens the box page when the box answers. The sources give no start-up time; if nothing changes after 15
 minutes, unplug the power supply, wait ten seconds and plug it in again.
@@ -175,18 +176,27 @@ hardware address of the cable (`eth0`) plus one, so a box shows two addresses th
 1. On Ubuntu, open the network menu at the top right, choose the Wi-Fi network `Viindoo-IoT-...` and connect. Ubuntu
    may say there is no internet: that is right.
 2. Open `http://10.11.12.1`. The "Network" section says "Own Wi-Fi network of the box".
-3. Click "Wi-Fi". Under "Name of the Wi-Fi network" choose yours from the list, or type its name (a hidden network is
-   not listed: type it exactly). Under "Password (leave empty for a network without one)" type its password.
-   Networks that ask for a user name as well (802.1X) cannot be joined.
+3. Click "Wi-Fi". The box lists the networks it hears right under the field "Name of the Wi-Fi network": click yours,
+   or type its name (typing narrows the list; a network that announces no name is not listed, and a hidden network is
+   typed exactly). The radio may need a moment, most of all just after the box served its own network: the window
+   says "Looking for Wi-Fi networks..." and asks again by itself, for up to a minute and a half. When the box hears
+   nothing it says so, and when it does not answer it says that; type the name then. Under "Password (leave empty
+   for a network without one)" type its password. Networks that ask for a user name as well (802.1X) cannot be
+   joined.
 4. Keep "Keep this network after a restart" ticked, then click "Join the network".
-5. The page says "The box is joining `<name>`." Joining restarts the box software, so the page waits for the box.
-   With a network cable plugged in, the page stays reachable at the cable address and comes back by itself.
+5. The page says "The box is joining `<name>`." A join that changes the addresses of the box restarts the box
+   software, so the page waits for the box. With a network cable plugged in, the window says the box stays reachable
+   at its cable address, and the page comes back by itself.
    Without one, the page loses contact with the box: connect your computer back to the same network the box joined,
    wait a minute, and open the box by the name the page shows (`http://<host name>.local`) or by the address it has
    on that network (find it as in the cable steps).
-   A wrong password is reported in the Wi-Fi window ("The box could not join `<name>`: the password was refused.")
-   and by the Wi-Fi line of the "Self-test". The box goes back to its previous network, or opens `Viindoo-IoT-...`
-   again; join that and retry. The password field has a "Show password" switch for checking what you typed.
+   A wrong password is reported in the Wi-Fi window as such ("The box could not join `<name>`: the password was
+   refused."), a network that did not answer as "the network did not answer", and the Wi-Fi line of the "Self-test"
+   says it too. The box goes back to its previous network. When that leaves the box with the addresses it had, as on
+   a cable, a failed join changes nothing and restarts nothing: the box page and the POS terminals stay connected,
+   and the window shows the list of networks again at once, for another try. A box left with no address opens
+   `Viindoo-IoT-...` again; join that and retry. The password field has a "Show password" switch for checking what
+   you typed.
 
 The box page can be reached on port 80 (`http://`), 443 (`https://`, with a certificate your browser warns about
 until you accept it once) and 8069.
@@ -260,14 +270,35 @@ A terminal that is not set up shows the cashier "The devices are not connected t
 cashier does nothing else: IT repeats step 3 on that terminal. If someone clicked "Block", the browser also shows its
 own warning; allow the site again in the site settings of the browser.
 
+**Screens.** A box starts the same with or without a screen plugged in at power-on. The image tells the board to
+report an HDMI screen at all times (`hdmi_force_hotplug=1` in the firmware file `config.txt`, which `install_layer.sh`
+sets on a stock system too),
+so a box with no screen still lists one screen and runs the browser of its customer screen on it, and its scanners,
+printers and scales are listed either way. A screen plugged in while the box runs shows the till page at the
+resolution the box started with; to give the screen its own resolution, switch the box off and on with the screen
+plugged in. The customer screen opens the till page with no permission question: the browser of the box is allowed
+to reach the local network by a policy file of the box (`box/system/README.md`, "Kiosk browser"), so nothing is
+allowed on the screen itself.
+
 **Restart.** The "Restart the box" button (under "Advanced", and offered by some self-test lines) restarts the box
 software, not the operating system. Devices and printing from Viindoo pause for about a minute and the page waits
 for the box; the box is not powered off.
 
+**The box service.** It runs with no real-time limit on its threads, whatever `limit_time_real` holds in
+`odoo.conf`: the layer sets the limit to 0 as the service starts, and the file is left as it is. It closes a
+connection a client opens and leaves idle after 15 seconds of silence, so such connections do not pile up. A
+restart or a stop of the service ends within about eight seconds, even when a client holds a connection open;
+the pause above is the time the service takes to start again.
+
+**Scanners.** A USB scanner (or keyboard) that is unplugged and plugged back is listed again by itself, with no
+restart; a box that starts before its screen is up lists the scanner as soon as the screen is.
+
 **Scales.** The box drives serial scales: Toledo 8217 and Adam Equipment (both from core), and UTE UPA-Q
 price-computing scales, which speak at 9600 baud. Any other serial device is named "Adam Equipment" by core. Some
 scales answer nothing while the pan is empty: if a scale is plugged in and the "Devices" section does not show it
-under its right name, put a load on the pan and click "Restart the box"; the box finds it again.
+under its right name, put a load on the pan and click "Restart the box"; the box finds it again. "Read weight" on a
+scale that gives no reading answers "The scale gave no weight." and says what to check: put a weight on the scale,
+check its cable and its serial settings, and, if the scale has a menu, choose the protocol its manual names.
 
 **Network printers.** A network printer is listed once, even when it announces itself under several names or
 addresses.
@@ -280,7 +311,9 @@ default) it applies a new release by itself and restarts; a release that does no
 and never tried again. With it off, click "Update to `<release>`". The sentence in "Software" says where the box
 stands, for example "The box software is the latest release.", "A new release is on trial after a restart; the box
 keeps it once it runs well." or, without internet, "The box could not reach the place where releases are published.
-Updates need internet access; devices work without it." A box written from a supported image does not install a
+Updates need internet access; devices work without it." When its look could not reach the place where releases are
+published, the box looks again by itself, after one minute, then after twice the wait before, at most every hour,
+until one look reaches it. A box written from a supported image does not install a
 candidate ("The release that is published is a candidate, which this box does not install."). If the box says "The
 new release needs a newer image of the box than the one on its card.", write a newer image to the card (part 3), then
 pair the box again: in Viindoo open the box and click **Re-pair**, and use the new code on the box page.
@@ -347,7 +380,10 @@ The workflow `box-image.yml` does the same on a hosted runner when a tag `box-*`
 `--expect-mode` with the kind of release its gate decided; the script stops if its own reading of the tag
 differs. The build also stops unless the image holds `/etc/sudoers.d/010_pi-nopasswd` with exactly
 `pi ALL=(ALL) NOPASSWD: ALL` and no `/etc/sudoers.d/011_viindoo-iot-box`, and unless the password field of `pi`
-in `/etc/shadow` is exactly `!` and no backup of the password files (`/etc/shadow-`, `/etc/gshadow-`) is left.
+in `/etc/shadow` is exactly `!` and no backup of the password files (`/etc/shadow-`, `/etc/gshadow-`) is left. It
+removes the SSH host keys the build made and stops unless the image holds none and enables the unit of the base
+system that makes them (`regenerate_ssh_host_keys.service`): each box makes its own at its first start. It stops
+too unless `/boot/config.txt` holds `hdmi_force_hotplug=1` under its last `[all]` section.
 The image script of core prints the password it first gives `pi`; the build replaces that line in its log, and
 a build that finds the field not locked says only that, never the field.
 
@@ -375,8 +411,10 @@ must agree before any box moves.
 
 1. Candidate, before the box work is merged: push the tag `box-<series>-rc.<n>` on the head of the work
    branch. The workflow builds a candidate image and publishes it as a pre-release whose file name and title
-   say CANDIDATE. Its box follows the branch `box-candidate/<series>`, which the workflow creates at the
-   tagged commit if it does not exist; no customer box can select that channel. The release pointer of a
+   say CANDIDATE. Its box follows the branch `box-candidate/<series>`. The workflow creates that branch at the
+   tagged commit when it does not exist, and moves it forward to the tagged commit when that commit contains the
+   head of the branch; it never moves it backwards or sideways, so a tag on an older commit, or on another line of
+   history, publishes its image and leaves the branch where it is. No customer box can select that channel. The release pointer of a
    candidate has `candidate: true`, and `release` is `rc.<n>` or ends in `-rc.<n>`; a release that contains
    `rc.` in any other way (`rc.1-final`, `1.0-rc.1x`, `xrc.1`) is refused by the checker and by the box. A
    candidate never moves a release channel and never runs in the environment that holds the deploy key.
@@ -402,6 +440,9 @@ must agree before any box moves.
       and then reads the channel back and requires the tagged commit. Boxes see the release only when
       `advance` ends. Only then does `latest` mark the release page as the latest one. If `advance` fails
       after `publish` succeeded, "Re-run failed jobs" finishes it.
+
+The image of every release, candidate or supported, holds no SSH host key: the build refuses one, and each box
+makes its own at its first start.
 
 A supported release page is never replaced: a run for a supported tag whose release exists fails with "a
 supported release is never replaced; publish a new release". Only a candidate's files are replaced when its tag
