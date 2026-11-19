@@ -70,3 +70,53 @@ pin_core() {
     # Core's own image script keeps the folder of the device drivers a customer adds out of the repository.
     printf '%s\n' "addons/hw_drivers/iot_devices/" | as_box_user tee "${tree}/.git/info/exclude" > /dev/null
 }
+
+# The firmware setting that makes the board report a screen on its HDMI output whether or not one is plugged in.
+# Core's display manager starts X on that output only when the firmware reports one; with the setting a box
+# started with no screen runs X as a box with a screen does, and a screen plugged in later meets a running output.
+readonly HDMI_HOTPLUG_SETTING=hdmi_force_hotplug=1
+
+# Reads or sets the setting in the firmware configuration file named by $2: `check` succeeds when the last
+# section [all] of the file holds it, `set` puts it there. A file whose last section is another one, or that
+# has none, gets a section [all] of its own at its end; a value the section holds already is replaced; a file
+# that holds the setting needs no change and is not written.
+firmware_hotplug() {
+    python3 -I - "$1" "$2" "${HDMI_HOTPLUG_SETTING}" << 'PYTHON'
+import os
+import sys
+
+mode, path, setting = sys.argv[1:4]
+key = setting.partition('=')[0]
+with open(path, encoding='utf-8') as source:
+    lines = source.read().splitlines()
+
+
+def section(line):
+    text = line.strip()
+    return text if text.startswith('[') and text.endswith(']') else None
+
+
+last = max((number for number, line in enumerate(lines) if section(line) is not None), default=None)
+if last is not None and section(lines[last]) == '[all]':
+    start = last + 1
+else:
+    start = None
+held = [number for number in range(start, len(lines)) if lines[number].strip().partition('=')[0] == key] \
+    if start is not None else []
+if mode == 'check':
+    sys.exit(0 if held and lines[held[-1]].strip() == setting else 1)
+if held and lines[held[-1]].strip() == setting:
+    sys.exit(0)
+if held:
+    lines[held[-1]] = setting
+else:
+    if start is None:
+        lines.append('[all]')
+    lines.append(setting)
+# The file is on a FAT partition, which holds no owner and no mode and takes a rename badly: it is written in place.
+with open(path, 'w', encoding='utf-8') as file:
+    file.write('\n'.join(lines) + '\n')
+    file.flush()
+    os.fsync(file.fileno())
+PYTHON
+}

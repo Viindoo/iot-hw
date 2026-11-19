@@ -15,6 +15,10 @@
 #   --home DIR            home of the box user                     (default: /home/pi)
 #   --skip-apt            install no Debian package (avahi-daemon and avahi-utils are expected to be there)
 #   --skip-system         do not run the system file installer of the layer
+#   --boot-config FILE    the firmware configuration file that gets the screen setting (default: /boot/firmware/config.txt
+#                         where the system has that directory, /boot/config.txt otherwise, which is where a box mounts
+#                         its firmware partition). Only an install, an image build included, writes it: the updater of a
+#                         box never edits the boot partition, so a box updated in place keeps the file it has
 set -o errexit
 set -o nounset
 set -o pipefail
@@ -32,11 +36,12 @@ channel=""
 BOX_HOME=/home/pi
 skip_apt=""
 skip_system=""
+boot_config=""
 
 # What the binaries of core's image script leave on a box, that a Viindoo box does not carry:
 # the third-party tunnel and the two payment-terminal programs.
 readonly REMOVED_BINARIES="/usr/bin/ngrok /usr/local/bin/eftdvs /usr/lib/eftapi.so"
-# An earlier version of this script wrote this sudo rules file; a box that has it loses it here.
+# The layer adds no sudo rules file of its own, so a box that holds this one loses it here.
 readonly OBSOLETE_SUDOERS_FILE=/etc/sudoers.d/011_viindoo-iot-box
 readonly SERVER_WIDE_MODULES="viin_hw_drivers,hw_drivers,hw_escpos,hw_posbox_homepage,viin_hw_homepage,web"
 
@@ -49,10 +54,19 @@ while [ $# -gt 0 ]; do
         --home) BOX_HOME="${2:?--home needs a value}"; shift 2 ;;
         --skip-apt) skip_apt=yes; shift ;;
         --skip-system) skip_system=yes; shift ;;
+        --boot-config) boot_config="${2:?--boot-config needs a value}"; shift 2 ;;
         *) fail "unknown option $1" ;;
     esac
 done
 [ -n "${layer_ref}" ] || fail "--layer-ref is required, for example --layer-ref box-<series>-<release>"
+if [ -z "${boot_config}" ]; then
+    if [ -f /boot/firmware/config.txt ]; then
+        boot_config=/boot/firmware/config.txt
+    else
+        boot_config=/boot/config.txt
+    fi
+fi
+readonly boot_config
 readonly layer_tree="${BOX_HOME}/iot-hw"
 readonly core_tree="${BOX_HOME}/odoo"
 readonly conf="${BOX_HOME}/odoo.conf"
@@ -152,7 +166,7 @@ remove_vendor_binaries() {
 
 # The box user is root on a box, as on core's: the base system gives it sudo without a password, and core
 # and the updater rely on that. What protects a box is the lock on its routes, the absence of any published
-# credential and the release channel, so the layer adds no sudo rules; it only removes those of an older version.
+# credential and the release channel, so the layer adds no sudo rules.
 remove_obsolete_sudoers() {
     rm -f -- "${OBSOLETE_SUDOERS_FILE}"
 }
@@ -178,6 +192,16 @@ write_channel() {
     else
         rm -f -- "${channel_file}"
     fi
+}
+
+# A box with no screen plugged in at its start would run no X, and its scanner would have no keymap; the firmware
+# is told to report a screen at all times (see lib.sh). The setting lives on the boot partition, which only this
+# script writes, in an image build or an install.
+force_hdmi_hotplug() {
+    [ -f "${boot_config}" ] || fail "the firmware configuration ${boot_config} is missing"
+    firmware_hotplug set "${boot_config}"
+    firmware_hotplug check "${boot_config}" || fail "${boot_config} does not hold ${HDMI_HOTPLUG_SETTING} under its last [all] section"
+    say "${boot_config}: ${HDMI_HOTPLUG_SETTING}"
 }
 
 main() {
@@ -208,6 +232,7 @@ main() {
     remove_vendor_binaries
     remove_obsolete_sudoers
     write_channel
+    force_hdmi_hotplug
     if [ -z "${skip_system}" ]; then
         bash "${layer_tree}/box/system/apply.sh"
     fi

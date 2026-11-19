@@ -65,11 +65,12 @@ def state_path():
 
 
 def open_lock_file():
-    """A descriptor of the lock file, created when absent.
+    """Open the lock file, creating it when it is absent.
 
-    An existing file is opened without O_CREAT: with `fs.protected_regular` set, opening a file of another
-    user with O_CREAT in a sticky directory is refused even to root. A file that appears meanwhile is opened.
+    :return: its file descriptor
     """
+    # An existing file is opened without O_CREAT: with ``fs.protected_regular`` set, opening a file of another
+    # user with O_CREAT in a sticky directory is refused even to root. A file that appears meanwhile is opened.
     flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC
     for _attempt in range(3):
         try:
@@ -85,10 +86,12 @@ def open_lock_file():
 
 @contextlib.contextmanager
 def state_lock():
-    """Hold the lock on the state file for the block; give up with TimeoutError after LOCK_WAIT seconds.
+    """Hold the lock on the state file for the block.
 
     Take it before the card is opened. Never run a command under it that starts or stops the box service:
     that calls this file again, which would wait on the lock for good.
+
+    :raises TimeoutError: when another process holds the lock for LOCK_WAIT seconds
     """
     descriptor = open_lock_file()
     try:
@@ -167,7 +170,7 @@ def card_open():
 
 
 def git(tree, *arguments):
-    """Run git on `tree` as the user the tree belongs to: git refuses the tree of somebody else."""
+    """Run git on ``tree`` as the user the tree belongs to: git refuses the tree of somebody else."""
     command = ['git', '-C', tree, *arguments]
     owner = os.stat(tree).st_uid
     if os.geteuid() == 0 and owner != 0:
@@ -200,7 +203,7 @@ def now():
 
 
 def arm_watch(start):
-    """Have the system run `--watch` later.
+    """Have the system run ``--watch`` later.
 
     A release that neither fails nor is marked good - the box service runs
     without the Viindoo layer when that layer cannot be loaded - would
@@ -279,7 +282,10 @@ def stopped():
 
 
 def asked_restart(trial):
-    """1 when the start now beginning takes the place of the last one counted, which then counts for nothing."""
+    """Tell whether the start now beginning replaces the last one counted, which then counts for nothing.
+
+    :return: 1 when it does, 0 when it does not
+    """
     stopped_at = trial.get('stopped_at')
     if not isinstance(stopped_at, (int, float)) or int(trial.get('starts') or 0) < 1:
         return 0

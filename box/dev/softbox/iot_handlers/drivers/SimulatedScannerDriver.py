@@ -24,7 +24,7 @@ class SimulatedScannerDriver(Driver):
         self.device_manufacturer = 'Viindoo software box'
         self._scans_file = device['path']
         self._is_scanner_file = self._scans_file.parent / IS_SCANNER_FILE_NAME
-        # Lines written before the scanner was plugged in were never scanned by it.
+        # A line written before the scanner is plugged in is not scanned.
         self._offset = self._scans_file.stat().st_size
         self._actions.update({
             '': self._action_default,

@@ -8,7 +8,7 @@ ExecStart=/usr/local/sbin/viin-box-wifi watch
 Restart=on-failure
 RestartSec=30
 # A stop reaches the watch alone, which ends the look it is in first: a join, the access point it starts, a restart
-# of the box service. That takes a few minutes at most.
+# of the box service. TimeoutStopSec covers the longest of them.
 KillMode=mixed
 TimeoutStopSec=6min
 

@@ -38,6 +38,8 @@ source "${here}/base-image.conf"
 readonly POSBOX=addons/point_of_sale/tools/posbox
 readonly BOX_REQUIREMENTS="git python3 kpartx qemu-arm-static zerofree xz rsync fdisk wget unxz sha256sum chroot mount"
 readonly REMOVED_FROM_IMAGE="usr/bin/ngrok usr/local/bin/eftdvs usr/lib/eftapi.so"
+# The unit of the base system that makes the SSH host keys of a box at its first start.
+readonly HOST_KEY_UNIT=regenerate_ssh_host_keys.service
 
 tag=""
 expect_mode=""
@@ -47,7 +49,7 @@ repository="$(cd "${here}/../.." && pwd)"
 work="$(pwd)/box-image-work"
 output="$(pwd)/box-image-out"
 series="" release="" mode="" odoo_commit="" layer_commit="" channel="" image_name=""
-posbox_dir="" root="" root_device=""
+posbox_dir="" root="" root_device="" boot_device=""
 
 mounted=()
 mapped=""
@@ -157,7 +159,11 @@ install_layer_in_image() {
     mapped="${posbox_dir}/iotbox.img"
     mapping="$(kpartx -avs "${mapped}")"
     root_device="/dev/mapper/$(tail -n 1 <<< "${mapping}" | awk '{print $3}')"
+    boot_device="/dev/mapper/$(head -n 1 <<< "${mapping}" | awk '{print $3}')"
     mount_here "${root_device}" "${root}"
+    # The firmware partition is /boot on a box, as core's image script mounts it: the installer writes the screen
+    # setting into /boot/config.txt there.
+    mount_here "${boot_device}" "${root}/boot"
     mount_here --bind /proc "${root}/proc"
     mount_here --bind /sys "${root}/sys"
     mount_here --bind /dev "${root}/dev"
@@ -179,6 +185,39 @@ install_layer_in_image() {
     in_image /tmp/box-install/install_layer.sh --layer-ref "${tag}" --layer-source "${layer_source}" "${install_args[@]}"
     rm -rf "${root:?}${layer_source}" "${root:?}/tmp/box-install"
     rm -f "${root:?}/usr/sbin/policy-rc.d"
+    remove_ssh_host_keys
+}
+
+# The SSH host key files of the mounted image, one path a line.
+ssh_host_key_files() {
+    [ -d "${root}/etc/ssh" ] || return 0
+    find "${root}/etc/ssh" -maxdepth 1 \( -type f -o -type l \) -name 'ssh_host_*'
+}
+
+# Succeeds when the base system makes the host keys at the first start: its unit is in the image and enabled.
+host_key_unit_enabled() {
+    [ -n "$(find "${root}/etc/systemd/system" -path "*.wants/${HOST_KEY_UNIT}" 2> /dev/null)" ] \
+        && { [ -e "${root}/usr/lib/systemd/system/${HOST_KEY_UNIT}" ] || [ -e "${root}/etc/systemd/system/${HOST_KEY_UNIT}" ]; }
+}
+
+# Every card is written from one image, so a host key in the image would be the key of every box. Keys the build
+# made are removed, and each box makes its own at its first start, which only the unit of the base system does: the
+# build fails when that unit is not enabled, since a box would then have no host key at all. Nothing runs on a box.
+remove_ssh_host_keys() {
+    local path
+    host_key_unit_enabled || fail "the image does not enable ${HOST_KEY_UNIT}, which makes the SSH host keys of a box at its first start"
+    while read -r path; do
+        rm -f -- "${path}"
+        say "removed /${path#"${root}/"} from the image"
+    done < <(ssh_host_key_files)
+}
+
+refuse_ssh_host_keys() {
+    local path listed=""
+    while read -r path; do
+        listed="${listed} /${path#"${root}/"}"
+    done < <(ssh_host_key_files)
+    [ -z "${listed}" ] || fail "the image holds an SSH host key, which every box written from it would share:${listed}"
 }
 
 # What the image holds is read from the image, never taken from what the build meant to put there.
@@ -187,6 +226,10 @@ verify_and_describe_image() {
     for path in ${REMOVED_FROM_IMAGE}; do
         [ ! -e "${root}/${path}" ] || fail "the image still holds /${path}"
     done
+    refuse_ssh_host_keys
+    [ -f "${root}/boot/config.txt" ] || fail "the image holds no /boot/config.txt"
+    firmware_hotplug check "${root}/boot/config.txt" \
+        || fail "/boot/config.txt of the image does not hold ${HDMI_HOTPLUG_SETTING} under its last [all] section"
     # The box user needs no password to use sudo: core's scripts run commands as root on its behalf, and the base
     # system grants exactly this. The layer adds no sudoers file of its own.
     [ -f "${root}/etc/sudoers.d/010_pi-nopasswd" ] || fail "the image holds no /etc/sudoers.d/010_pi-nopasswd"

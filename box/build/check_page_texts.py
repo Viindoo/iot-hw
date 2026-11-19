@@ -45,7 +45,11 @@ def differences(english, vietnamese):
 
 
 def missing_keys(texts):
-    """Return one line per key that some language file holds and another lacks; texts maps a file name to its keys."""
+    """List the keys that a language file lacks.
+
+    :param texts: the keys of each language file, by file name
+    :return: one line per key that some language file holds and another lacks
+    """
     every_key = set().union(*texts.values()) if texts else set()
     return [
         f'{I18N_DIRECTORY.as_posix()}/{name} lacks key "{key}"'
@@ -56,7 +60,10 @@ def missing_keys(texts):
 
 
 def vendor_words(text):
-    """Return the vendor words in text, in order of appearance; an empty list when there are none."""
+    """Find the vendor words of a text.
+
+    :return: the vendor words in ``text``, in order of appearance; an empty list when there are none
+    """
     return VENDOR_WORD.findall(text)
 
 

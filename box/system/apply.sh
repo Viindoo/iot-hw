@@ -25,6 +25,7 @@ readonly ACCESS_POINT_NAME=usr/local/sbin/viin-box-access-point-name
 # Each file under this directory, as its path on the box, with its permissions.
 readonly FILES="
 etc/avahi/services/viindoo-iot.service 644
+etc/chromium/policies/managed/viindoo-local-network.json 644
 etc/nginx/sites-enabled/default 644
 etc/nginx/viindoo/box.conf 644
 etc/nginx/viindoo/name.conf.template 644

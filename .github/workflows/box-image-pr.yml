@@ -10,11 +10,11 @@
 #   - The tag exists only in the checkout of the runner, on the commit under test, named from the pointer
 #     (box-<series>-<release>); it is never pushed.
 #   - A candidate pointer builds as a candidate. A pointer that is not a candidate builds as the supported image it
-#     names: the commit under test stands for the series branch, because a pull request is not merged yet. That
+#     names: the commit under test stands for the series branch, because the commit of a pull request is not on it. That
 #     only gives the script a branch to look at; the checker applies its rules to a real tag unchanged, and the
 #     tag flow of box-image.yml still reads it with the checker of the series branch.
 #   - No environment, no secret, read-only permissions. Nothing reaches a release page or a branch; the files
-#     are kept for a few days as a workflow artifact so that an image can be tried.
+#     are kept as a workflow artifact so that an image can be tried.
 #   - It is not part of box-checks.yml and is not a required status check.
 #
 # The paths below are everything build_image.sh reads: its own directory, the installer it copies into the
