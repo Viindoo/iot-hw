@@ -65,7 +65,10 @@ def _contained(endpoint):
 
 
 def _static(path):
-    """The address of a static file of the module, '' when the box does not have the file."""
+    """The address of a static file of the module.
+
+    :return: the address, or '' when the box does not have the file
+    """
     return STATIC_URL + path if (MODULE / 'static' / path).is_file() else ''
 
 
@@ -89,7 +92,10 @@ def offered_log_levels():
 
 
 def _layer_status():
-    """`selftest.status()` with the offered log levels; when it cannot be had, `error` says so and core's data stays."""
+    """The status of the Viindoo layer, with the offered log levels.
+
+    :return: `selftest.status()`, or a dict with `error` when it cannot be read; core's data stays
+    """
     try:
         status = selftest.status()
     except Exception as error:
@@ -102,11 +108,14 @@ def _layer_status():
 
 
 def version_info(software):
-    """What the version route answers for `software`, an `update.status()`.
+    """What the version route answers.
 
     Core's three keys keep their meaning for the release of the box: the box
     software is up to date when no release is offered, the image when no
     release asks for a newer one.
+
+    :param software: an `update.status()`
+    :return: the answer of the route
     """
     last = software['last_check'] or {}
     offered = software['offered'] or {}
@@ -153,9 +162,11 @@ class BoxPage(homepage.IotBoxOwlHomePage):
     @_contained
     @lock.refusing_other_sites
     def get_version_info(self, check='1'):
-        """The release the box runs and whether one is offered; unless `check` is '0', a look for one starts now.
+        """The release the box runs and whether one is offered.
 
-        The look ends in the background: `update.busy` says it is under way.
+        The look for a release ends in the background: `update.busy` says it is under way.
+
+        :param check: '0' answers from the last look; any other value starts a look now
         """
         software = update.status() if check == '0' else update.check_now()
         return request.make_json_response(version_info(software), headers=NO_STORE)

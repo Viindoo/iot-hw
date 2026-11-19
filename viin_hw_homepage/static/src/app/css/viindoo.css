@@ -104,6 +104,9 @@ body {
 .viin-break { overflow-wrap: anywhere; }
 .viin-mono { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace; font-size: 0.85rem; }
 
+/* Wi-Fi dialog: the list of networks scrolls inside the dialog */
+.viin-networks { max-height: 12rem; overflow-y: auto; }
+
 /* Self-test */
 .viin-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; }
 .viin-summary .viin-summary-text { flex: 1 1 14rem; font-weight: 600; }

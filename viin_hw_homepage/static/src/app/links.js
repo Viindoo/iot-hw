@@ -5,9 +5,9 @@ export const SUPPORT_URL = `${SITE}/ticket`;
 const IOT_CHAPTER = "applications/internet-of-things.html";
 
 /*
- * The chapter of the user guide on the IoT box, for the series the box reports and the language of the page, so that
- * no text is edited at a forward-port. The guide puts the language after the series: English has no segment,
- * Vietnamese has `vi`. Without a series the guide is opened at its start.
+ * The chapter of the user guide on the IoT box, for the series the box reports and the language of the page: the
+ * address is derived from both, so no series needs a text of its own. The guide puts the language after the series:
+ * English has no segment, Vietnamese has `vi`. Without a series the guide is opened at its start.
  */
 export function documentationUrl(series, language) {
     if (!series) {
