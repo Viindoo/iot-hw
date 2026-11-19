@@ -2,9 +2,12 @@
 import json
 import os
 import pwd
+import re
 import shutil
+import stat
 import subprocess
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -13,7 +16,17 @@ import services_common as box
 
 BUILD_SCRIPT = box.REPOSITORY / 'box' / 'build' / 'build_image.sh'
 INSTALL_SCRIPT = box.REPOSITORY / 'box' / 'install' / 'install_layer.sh'
+INSTALL_LIBRARY = box.REPOSITORY / 'box' / 'install' / 'lib.sh'
+RELEASE_CHECK = box.REPOSITORY / 'box' / 'build' / 'check_release.sh'
+APPLY_SCRIPT = box.SYSTEM_FILES / 'apply.sh'
+IMAGE_WORKFLOW = box.REPOSITORY / '.github' / 'workflows' / 'box-image.yml'
+POLICY = 'etc/chromium/policies/managed/viindoo-local-network.json'
 SECRET = 'S3cretFromCore'
+
+
+# The firmware configuration of a box as core's image script leaves it: the stock sections, the last of them [all].
+FIRMWARE_CONFIGURATION = (
+    'dtparam=audio=on\n[pi4]\nmax_framebuffers=2\n[all]\ndtoverlay=vc4-fkms-v3d\ndisable_overscan=1\n')
 
 
 def _bash(program, *arguments, stdin=None):
@@ -67,7 +80,7 @@ class TestPasswordCoreChoosesForTheBoxUser(unittest.TestCase):
 
 
 class TestBoxUserWithALockedPassword(common.BoxStateCase):
-    """The installer locks the password of the box user (`!`); core still has to be able to set a new one."""
+    """The installer locks the password of the box user (``!``); core still has to be able to set a new one."""
 
     @classmethod
     def setUpClass(cls):
@@ -82,7 +95,12 @@ class TestBoxUserWithALockedPassword(common.BoxStateCase):
 
     @staticmethod
     def hash_of(password, setting):
-        """What the system's own crypt(3) makes of `password` under the algorithm and salt `setting` names."""
+        """Hash a password with the system's own crypt(3).
+
+        :param password: the password to hash
+        :param setting: the algorithm and the salt, in the form crypt(3) takes them
+        :return: the hash
+        """
         return subprocess.run(['perl', '-e', 'print crypt($ENV{PASSWORD}, $ENV{SETTING})'],
                               env={'PASSWORD': password, 'SETTING': setting}, capture_output=True, text=True,
                               check=True, timeout=30).stdout
@@ -140,7 +158,10 @@ class TestConfigurationOfAnInstalledBox(unittest.TestCase):
         '[iot.box]\nserver_url = https://example.invalid\nidentifier = box-1\n')
 
     def installer_functions(self):
-        """The functions of the installer that write the options: its own text between two markers, as shipped."""
+        """Read the functions of the installer that write the options.
+
+        :return: the text of the installer between two markers, as shipped
+        """
         text = INSTALL_SCRIPT.read_text().splitlines()
         start = next(number for number, line in enumerate(text) if line.startswith('set_options() {'))
         end = next(number for number, line in enumerate(text) if line.startswith('configure_box_service'))
@@ -204,6 +225,9 @@ class TestLayerInstalledInTheHomeOfAnImage(unittest.TestCase):
         self.sudo('install', '--owner', 'pi', '--group', 'pi', '--mode', '0600', '/dev/null',
                   str(self.home / 'odoo.conf'))
         self.sudo('tee', str(self.home / 'odoo.conf'), stdin='[options]\nhttp_port = 8069\n')
+        # The firmware configuration of the image, which the installer writes the screen setting into.
+        self.boot_config = self.scratch / 'config.txt'
+        self.boot_config.write_text(FIRMWARE_CONFIGURATION)
         # The installer locks the password of the box user; the suite needs it back as it was.
         kept = self.sudo('getent', 'shadow', 'pi').stdout.strip().split(':')[1]
         self.addCleanup(subprocess.run, ['sudo', '-n', 'usermod', '--password', kept, 'pi'], check=False,
@@ -215,11 +239,14 @@ class TestLayerInstalledInTheHomeOfAnImage(unittest.TestCase):
                               timeout=120)
 
     def copy_core_tree_as_the_image_script_does(self, whole_tree_belongs_to_root):
-        """The core tree and the dotfiles as the image holds them when the installer starts.
+        """Lay out the core tree and the dotfiles as the image holds them when the installer starts.
 
         The image script clones core as root, copies it into the image, hands the tree to the box user inside the
-        image, and then copies a few files over it as root again (`cp -a` of a root-owned tree sets the owner of
-        every directory on the way). With `whole_tree_belongs_to_root` nothing was handed over at all."""
+        image, and then copies a few files over it as root again (``cp -a`` of a root-owned tree sets the owner of
+        every directory on the way).
+
+        :param whole_tree_belongs_to_root: when true the image script handed nothing over to the box user
+        """
         tree = self.home / 'odoo'
         self.sudo('git', '-c', 'safe.directory=*', 'clone', '--quiet', str(self.core_remote), str(tree))
         self.sudo('git', '-c', 'safe.directory=*', '-C', str(tree), 'reset', '--hard', '--quiet',
@@ -234,7 +261,7 @@ class TestLayerInstalledInTheHomeOfAnImage(unittest.TestCase):
         for dotfile in ('.bashrc', '.inputrc', '.vimrc', '.xsession'):
             self.sudo('install', '--owner', 'root', '--group', 'root', '/dev/null', str(self.home / dotfile))
 
-    def copy_layer_tree_of_an_older_install(self):
+    def copy_existing_layer_tree(self):
         tree = self.home / 'iot-hw'
         self.sudo('git', '-c', 'safe.directory=*', 'clone', '--quiet', str(self.layer_source), str(tree))
         self.sudo('chown', 'root:root', str(tree))
@@ -243,7 +270,7 @@ class TestLayerInstalledInTheHomeOfAnImage(unittest.TestCase):
         return subprocess.run(
             ['sudo', '-n', 'bash', str(INSTALL_SCRIPT), '--layer-ref', 'start', '--layer-source',
              str(self.layer_source), '--core-source', str(self.core_remote), '--home', str(self.home),
-             '--skip-apt', '--skip-system'],
+             '--skip-apt', '--skip-system', '--boot-config', str(self.boot_config)],
             capture_output=True, text=True, check=False, timeout=300)
 
     def as_box_user(self, *command):
@@ -251,7 +278,11 @@ class TestLayerInstalledInTheHomeOfAnImage(unittest.TestCase):
                               capture_output=True, text=True, check=False, timeout=60)
 
     def head_as_box_user(self, tree):
-        """The commit of `tree` read the way the box software reads it: by git, as the box user, with no exception."""
+        """Read a commit the way the box software reads it: by git, as the box user, with no exception.
+
+        :param tree: a git tree
+        :return: the commit its head names
+        """
         done = self.as_box_user('git', '-C', str(tree), 'rev-parse', 'HEAD')
         self.assertEqual(done.returncode, 0, f'{tree}: {done.stderr}')
         return done.stdout.strip()
@@ -290,14 +321,32 @@ class TestLayerInstalledInTheHomeOfAnImage(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assert_installed_for_the_box_user()
 
-    def test_layer_tree_of_an_earlier_install_that_belongs_to_root_is_taken_over_by_the_box_user(self):
+    def test_layer_tree_that_exists_and_belongs_to_root_is_taken_over_by_the_box_user(self):
         self.copy_core_tree_as_the_image_script_does(whole_tree_belongs_to_root=False)
-        self.copy_layer_tree_of_an_older_install()
+        self.copy_existing_layer_tree()
 
         done = self.install()
 
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assert_installed_for_the_box_user()
+
+    def test_installer_sets_the_screen_setting_of_the_firmware_once(self):
+        first = self.install()
+        written = self.boot_config.read_text()
+        second = self.install()
+
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(written, FIRMWARE_CONFIGURATION + 'hdmi_force_hotplug=1\n')
+        self.assertEqual(self.boot_config.read_text(), written)
+
+    def test_installer_fails_naming_the_firmware_configuration_when_there_is_none(self):
+        self.boot_config.unlink()
+
+        done = self.install()
+
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn(str(self.boot_config), done.stderr)
 
     def test_box_user_can_still_create_its_files_in_its_home_after_the_install(self):
         """The box software stages its state file in the home before it replaces the old one."""
@@ -343,7 +392,14 @@ class TestImageBuildRefusesAReleaseTheWorkflowDidNotCheck(unittest.TestCase):
         self.git('checkout', '--quiet', self.tagged)
 
     def read_release(self, tag, expect_mode='', expect_commit='', series_ref=''):
-        """The exit status of the build's own reading of `tag`, with the expectations the workflow would pass."""
+        """Run the build's own reading of a tag, with the expectations the workflow would pass.
+
+        :param tag: the tag to read
+        :param expect_mode: ``candidate``, ``supported`` or empty
+        :param expect_commit: the commit the workflow checked, or empty
+        :param series_ref: the branch a supported release must be on, or empty
+        :return: the exit status
+        """
         program = ('source "$1"; tag="$2"; repository="$3"; expect_mode="$4"; expect_commit="$5"; series_ref="$6"; '
                    'read_release')
         return _bash(program, str(BUILD_SCRIPT), tag, self.repository, expect_mode, expect_commit, series_ref
@@ -433,7 +489,7 @@ class TestVendorWordsOfThePageTexts(unittest.TestCase):
 
     def test_a_series_number_is_found_and_a_version_of_another_shape_is_not(self):
         self.assertTrue(self.vendor_words('Works with 18.0'))
-        self.assertEqual(self.vendor_words('Image 1.0, address 192.168.10.1, 118.04'), [])
+        self.assertEqual(self.vendor_words('Image 1.0, address 192.0.2.1, 118.04'), [])
 
 
 class TestKeysOfThePageTexts(unittest.TestCase):
@@ -466,6 +522,457 @@ class TestKeysOfThePageTexts(unittest.TestCase):
         directory = box.REPOSITORY / 'viin_hw_homepage' / 'static' / 'src' / 'app' / 'i18n'
         texts = {file.name: json.loads(file.read_text(encoding='utf-8')) for file in directory.glob('*.json')}
         self.assertEqual(self.missing(**texts), [])
+
+
+class TestSystemFilesOfTheBox(unittest.TestCase):
+    """``apply.sh`` puts every system file of the layer where a box reads it, with its mode, and only once."""
+
+    @staticmethod
+    def apply():
+        return subprocess.run(['sudo', '-n', 'bash', str(APPLY_SCRIPT)], capture_output=True, text=True, check=False,
+                              timeout=common.PROCESS_TIMEOUT)
+
+    @staticmethod
+    def listed_files():
+        """Read the list of files ``apply.sh`` installs.
+
+        :return: the mode of each file, by its path on the box
+        """
+        text = APPLY_SCRIPT.read_text()
+        names = dict(re.findall(r'^readonly (\w+)=(\S+)$', text, re.MULTILINE))
+        block = re.search(r'^readonly FILES="\n(.*?)"$', text, re.MULTILINE | re.DOTALL).group(1)
+        listed = {}
+        for line in block.splitlines():
+            if line.strip():
+                path, mode = re.sub(r'\$\{(\w+)\}', lambda name: names[name.group(1)], line).split()
+                listed[path] = int(mode, 8)
+        return listed
+
+    def test_every_file_of_the_tree_is_listed_and_lands_with_its_mode_and_a_second_run_installs_nothing(self):
+        installed = self.apply()
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        listed = self.listed_files()
+        files = {path: Path('/', path) for path in listed}
+        tree = {path.relative_to(box.SYSTEM_FILES).as_posix() for path in box.SYSTEM_FILES.rglob('*')
+                if path.is_file() and path.relative_to(box.SYSTEM_FILES).as_posix() not in ('apply.sh', 'README.md')}
+
+        self.assertEqual(set(listed), tree)
+        for path, mode in listed.items():
+            with self.subTest(path=path):
+                self.assertEqual(stat.S_IMODE(Path('/', path).stat().st_mode), mode)
+                self.assertEqual(Path('/', path).read_bytes(), (box.SYSTEM_FILES / path).read_bytes())
+        before = {path: (file.stat().st_ino, file.stat().st_mtime_ns) for path, file in files.items()}
+        again = self.apply()
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertEqual({path: (file.stat().st_ino, file.stat().st_mtime_ns) for path, file in files.items()}, before)
+
+    def test_roll_back_guard_of_the_release_can_run(self):
+        done = subprocess.run(['python3', '-I', str(box.GUARD), '--check'], capture_output=True, text=True,
+                              check=False, timeout=common.PROCESS_TIMEOUT)
+
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+
+    def test_kiosk_browser_policy_is_installed_on_a_box_that_has_none(self):
+        policy = Path('/', POLICY)
+        common.as_root('rm', '-f', str(policy))
+
+        done = self.apply()
+
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(json.loads(policy.read_text()), {'LocalNetworkAccessAllowedForUrls': ['*']})
+        self.assertEqual(stat.S_IMODE(policy.stat().st_mode), 0o644)
+        self.assertEqual(policy.stat().st_uid, 0)
+
+
+FIRMWARE_CASES = {
+    'last section is all': (FIRMWARE_CONFIGURATION, FIRMWARE_CONFIGURATION + 'hdmi_force_hotplug=1\n'),
+    'last section is another one': ('[all]\na=1\n[cm4]\nb=2\n', '[all]\na=1\n[cm4]\nb=2\n[all]\nhdmi_force_hotplug=1\n'),
+    'no section and no end of line': ('a=1', 'a=1\n[all]\nhdmi_force_hotplug=1\n'),
+    'another value in the last all': ('[all]\nhdmi_force_hotplug=0\na=1\n', '[all]\nhdmi_force_hotplug=1\na=1\n'),
+    'set only in an earlier section': ('[pi4]\nhdmi_force_hotplug=1\n[all]\na=1\n',
+                                       '[pi4]\nhdmi_force_hotplug=1\n[all]\na=1\nhdmi_force_hotplug=1\n'),
+    'only a comment': ('[all]\n#hdmi_force_hotplug=1\n', '[all]\n#hdmi_force_hotplug=1\nhdmi_force_hotplug=1\n'),
+}
+
+
+class TestFirmwareScreenSetting(unittest.TestCase):
+    """The firmware of a box reports a screen on its output whether or not one is plugged in, so X starts."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.config = Path(directory.name, 'config.txt')
+
+    def firmware(self, mode):
+        return _bash('source "$1"; firmware_hotplug "$2" "$3"', str(INSTALL_LIBRARY), mode, str(self.config))
+
+    def test_setting_goes_under_the_last_all_section_whatever_the_file_ends_with(self):
+        for case, (before, after) in FIRMWARE_CASES.items():
+            with self.subTest(case=case):
+                self.config.write_text(before)
+
+                done = self.firmware('set')
+
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual(self.config.read_text(), after)
+                self.assertEqual(self.firmware('check').returncode, 0)
+
+    def test_file_that_holds_the_setting_is_not_written_again(self):
+        self.config.write_text(FIRMWARE_CONFIGURATION)
+        self.firmware('set')
+        written = self.config.stat().st_mtime_ns
+        text = self.config.read_text()
+
+        done = self.firmware('set')
+
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.config.read_text(), text)
+        self.assertEqual(self.config.stat().st_mtime_ns, written)
+
+    def test_file_without_the_setting_under_its_last_all_section_fails_the_check(self):
+        for case, (before, _after) in FIRMWARE_CASES.items():
+            with self.subTest(case=case):
+                self.config.write_text(before)
+
+                self.assertEqual(self.firmware('check').returncode, 1)
+
+
+class TestImageHoldsNoSshHostKey(unittest.TestCase):
+    """A host key in the image would be the key of every box written from it: each box makes its own at its first
+    start, through the unit of the base system."""
+
+    UNIT = 'regenerate_ssh_host_keys.service'
+    KEYS = ('ssh_host_ed25519_key', 'ssh_host_ed25519_key.pub', 'ssh_host_rsa_key', 'ssh_host_ecdsa_key.pub')
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name, 'root')
+        (self.root / 'etc' / 'ssh').mkdir(parents=True)
+        (self.root / 'etc' / 'ssh' / 'sshd_config').write_text('Port 22\n')
+        wants = self.root / 'etc' / 'systemd' / 'system' / 'multi-user.target.wants'
+        wants.mkdir(parents=True)
+        (wants / self.UNIT).symlink_to(f'/lib/systemd/system/{self.UNIT}')
+        (self.root / 'usr' / 'lib' / 'systemd' / 'system').mkdir(parents=True)
+        (self.root / 'usr' / 'lib' / 'systemd' / 'system' / self.UNIT).write_text('[Service]\n')
+
+    def plant_keys(self, *names):
+        for name in names or self.KEYS:
+            (self.root / 'etc' / 'ssh' / name).write_text('key\n')
+
+    def run_function(self, function):
+        return _bash(f'source "$1"; root="$2"; {function}', str(BUILD_SCRIPT), str(self.root))
+
+    def keys_left(self):
+        return sorted(path.name for path in (self.root / 'etc' / 'ssh').glob('ssh_host_*'))
+
+    def test_image_with_a_host_key_is_refused_and_the_path_is_named(self):
+        self.plant_keys('ssh_host_ed25519_key.pub')
+
+        done = self.run_function('refuse_ssh_host_keys')
+
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn('/etc/ssh/ssh_host_ed25519_key.pub', done.stderr)
+
+    def test_image_with_no_host_key_is_accepted(self):
+        self.assertEqual(self.run_function('refuse_ssh_host_keys').returncode, 0)
+
+    def test_host_keys_the_build_made_are_removed_and_the_rest_of_the_directory_stays(self):
+        self.plant_keys()
+
+        done = self.run_function('remove_ssh_host_keys && refuse_ssh_host_keys')
+
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.keys_left(), [])
+        self.assertTrue((self.root / 'etc' / 'ssh' / 'sshd_config').exists())
+
+    def test_build_fails_naming_the_unit_when_the_image_does_not_enable_it(self):
+        (self.root / 'etc' / 'systemd' / 'system' / 'multi-user.target.wants' / self.UNIT).unlink()
+
+        done = self.run_function('remove_ssh_host_keys')
+
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn(self.UNIT, done.stderr)
+
+    def test_build_fails_when_the_unit_is_enabled_but_the_image_does_not_hold_it(self):
+        (self.root / 'usr' / 'lib' / 'systemd' / 'system' / self.UNIT).unlink()
+
+        done = self.run_function('remove_ssh_host_keys')
+
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn(self.UNIT, done.stderr)
+
+
+class TestImageVerificationOfTheScreenSetting(unittest.TestCase):
+    """The build reads the image, not its own intentions: an image with no screen setting, or with a host key, is
+    refused whatever else it holds."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name, 'root')
+        (self.root / 'boot').mkdir(parents=True)
+
+    def verify(self):
+        return _bash('source "$1"; root="$2"; verify_and_describe_image', str(BUILD_SCRIPT), str(self.root))
+
+    def test_image_without_the_setting_is_refused_and_the_setting_is_named(self):
+        (self.root / 'boot' / 'config.txt').write_text(FIRMWARE_CONFIGURATION)
+
+        done = self.verify()
+
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn('hdmi_force_hotplug=1', done.stderr)
+
+    def test_image_whose_firmware_partition_holds_no_configuration_is_refused(self):
+        done = self.verify()
+
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn('/boot/config.txt', done.stderr)
+
+    def test_image_with_the_setting_is_not_refused_for_it(self):
+        (self.root / 'boot' / 'config.txt').write_text(FIRMWARE_CONFIGURATION + 'hdmi_force_hotplug=1\n')
+
+        done = self.verify()
+
+        self.assertNotIn('hdmi_force_hotplug', done.stderr)
+        self.assertNotIn('/boot/config.txt', done.stderr)
+
+    def test_image_with_a_host_key_is_refused_by_the_verification(self):
+        (self.root / 'etc' / 'ssh').mkdir(parents=True)
+        (self.root / 'etc' / 'ssh' / 'ssh_host_rsa_key').write_text('key\n')
+        (self.root / 'boot' / 'config.txt').write_text(FIRMWARE_CONFIGURATION + 'hdmi_force_hotplug=1\n')
+
+        done = self.verify()
+
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn('/etc/ssh/ssh_host_rsa_key', done.stderr)
+
+
+class TestCandidateStep(unittest.TestCase):
+    """What happens to the branch candidate boxes follow when a candidate tag is built, from two commits."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.repository = str(Path(directory.name, 'layer'))
+        subprocess.run(['git', 'init', '--quiet', '--initial-branch=main', self.repository], check=True, timeout=60)
+        self.older = self.commit('older')
+        self.newer = self.commit('newer')
+        self.git('checkout', '--quiet', '-b', 'other', self.older)
+        self.other = self.commit('other line of history')
+
+    def git(self, *arguments):
+        return subprocess.run(['git', '-c', 'user.name=Box Test', '-c', 'user.email=box@example.invalid', '-C',
+                               self.repository, *arguments], capture_output=True, text=True, check=True,
+                              timeout=60).stdout.strip()
+
+    def commit(self, text):
+        self.git('commit', '--quiet', '--allow-empty', '--message', text)
+        return self.git('rev-parse', 'HEAD')
+
+    def step(self, tagged, *branch_head):
+        return subprocess.run(['bash', str(RELEASE_CHECK), 'candidate-step', tagged, *branch_head, '--repository',
+                               self.repository], capture_output=True, text=True, check=False, timeout=60)
+
+    def test_no_branch_is_created(self):
+        done = self.step(self.newer)
+
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, 'create'), done.stderr)
+
+    def test_tagged_commit_that_contains_the_branch_head_moves_the_branch_forward(self):
+        done = self.step(self.newer, self.older)
+
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, 'advance'), done.stderr)
+
+    def test_tagged_commit_that_is_the_branch_head_moves_the_branch_to_where_it_is(self):
+        done = self.step(self.newer, self.newer)
+
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, 'advance'), done.stderr)
+
+    def test_older_candidate_keeps_the_branch_where_it_is_and_does_not_fail(self):
+        done = self.step(self.older, self.newer)
+
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, 'keep'), done.stderr)
+
+    def test_candidate_on_another_line_of_history_keeps_the_branch_where_it_is_and_does_not_fail(self):
+        done = self.step(self.other, self.newer)
+
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, 'keep'), done.stderr)
+
+    def test_branch_head_the_repository_does_not_hold_is_an_error_not_a_keep(self):
+        done = self.step(self.newer, 'f' * 40)
+
+        self.assertNotEqual(done.returncode, 0)
+        self.assertEqual(done.stdout.strip(), '')
+
+    def test_commit_that_is_not_a_full_commit_id_is_an_error(self):
+        self.assertNotEqual(self.step('main').returncode, 0)
+        self.assertNotEqual(self.step(self.newer, 'main').returncode, 0)
+
+
+GH_STUB = """#!/usr/bin/env python3
+import os
+import subprocess
+import sys
+
+arguments = sys.argv[1:]
+with open(os.environ['GH_LOG'], 'a') as log:
+    log.write(' '.join(arguments) + '\\n')
+fields = {}
+for flag, value in zip(arguments, arguments[1:]):
+    if flag in ('-f', '-F'):
+        key, _, text = value.partition('=')
+        fields[key] = text
+git = ['git', '--git-dir', os.environ['GH_REMOTE']]
+path = next(argument for argument in arguments if argument.startswith('repos/'))
+if '--method' in arguments:
+    ref = 'refs/' + path.split('/git/refs/', 1)[1]
+    if fields.get('force') != 'false':
+        sys.exit('the update is forced')
+    current = subprocess.run([*git, 'rev-parse', ref], capture_output=True, text=True, check=True).stdout.strip()
+    if subprocess.run([*git, 'merge-base', '--is-ancestor', current, fields['sha']]).returncode:
+        sys.exit('Update is not a fast forward')
+else:
+    ref = fields['ref']
+    if subprocess.run([*git, 'rev-parse', '--verify', '--quiet', ref], capture_output=True).returncode == 0:
+        sys.exit('Reference already exists')
+subprocess.run([*git, 'update-ref', ref, fields['sha']], check=True)
+"""
+
+
+class TestCandidateBranchStepOfTheWorkflow(unittest.TestCase):
+    """The step of the release workflow that moves the branch candidate boxes follow, run on local repositories with
+    a stand-in for the GitHub client."""
+
+    STEP = 'The branch the candidate boxes follow'
+    CHANNEL = 'refs/heads/box-candidate/18.0'
+    REPOSITORY = 'example/iot-hw'
+
+    def workflow_lines(self):
+        return IMAGE_WORKFLOW.read_text().splitlines()
+
+    def step_bounds(self):
+        lines = self.workflow_lines()
+        start = lines.index(f'      - name: {self.STEP}')
+        end = next((number for number in range(start + 1, len(lines)) if lines[number].startswith('      - ')
+                    or lines[number].startswith('  ') and not lines[number].startswith('   ')), len(lines))
+        return start, end
+
+    def step_script(self):
+        lines = self.workflow_lines()
+        start, end = self.step_bounds()
+        run_at = next(number for number in range(start, end) if lines[number].strip() == 'run: |')
+        indent = len(lines[run_at]) - len(lines[run_at].lstrip()) + 2
+        return textwrap.dedent('\n'.join(line[indent:] if line.strip() else '' for line in lines[run_at + 1:end]))
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.scratch = Path(directory.name)
+        self.remote = self.scratch / 'remote.git'
+        subprocess.run(['git', 'init', '--quiet', '--bare', '--initial-branch=main', str(self.remote)], check=True,
+                       timeout=60)
+        self.work = self.scratch / 'work'
+        subprocess.run(['git', 'clone', '--quiet', str(self.remote), str(self.work)], check=True, capture_output=True,
+                       timeout=60)
+        self.older = self.commit('older')
+        self.newer = self.commit('newer')
+        self.git('push', '--quiet', 'origin', 'main')
+        self.git('checkout', '--quiet', '-b', 'other', self.older)
+        self.other = self.commit('other line of history')
+        self.git('push', '--quiet', 'origin', 'other')
+        (self.work / 'box' / 'build').mkdir(parents=True)
+        shutil.copy(RELEASE_CHECK, self.work / 'box' / 'build' / 'check_release.sh')
+        self.bin = self.scratch / 'bin'
+        self.bin.mkdir()
+        (self.bin / 'gh').write_text(GH_STUB)
+        (self.bin / 'gh').chmod(0o755)
+        self.log = self.scratch / 'gh.log'
+
+    def git(self, *arguments, directory=None):
+        return subprocess.run(['git', '-c', 'user.name=Box Test', '-c', 'user.email=box@example.invalid', '-C',
+                               str(directory or self.work), *arguments], capture_output=True, text=True, check=True,
+                              timeout=60).stdout.strip()
+
+    def commit(self, text):
+        self.git('commit', '--quiet', '--allow-empty', '--message', text)
+        return self.git('rev-parse', 'HEAD')
+
+    def run_step(self, tagged):
+        environment = {
+            **os.environ, 'PATH': f'{self.bin}:{os.environ["PATH"]}', 'GH_TOKEN': 'unused', 'GH_REPO': self.REPOSITORY,
+            'CHANNEL': self.CHANNEL, 'LAYER_COMMIT': tagged, 'GH_LOG': str(self.log), 'GH_REMOTE': str(self.remote),
+            'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': f'url.{self.remote}.insteadOf',
+            'GIT_CONFIG_VALUE_0': f'https://github.com/{self.REPOSITORY}.git'}
+        return subprocess.run(['bash', '-c', self.step_script()], cwd=self.work, env=environment,
+                              capture_output=True, text=True, check=False, timeout=120)
+
+    def branch(self):
+        done = subprocess.run(['git', '--git-dir', str(self.remote), 'rev-parse', '--verify', '--quiet', self.CHANNEL],
+                              capture_output=True, text=True, check=False, timeout=60)
+        return done.stdout.strip() or None
+
+    def calls(self):
+        return self.log.read_text().splitlines() if self.log.exists() else []
+
+    def set_branch(self, commit):
+        self.git('update-ref', self.CHANNEL, commit, directory=self.remote)
+
+    def test_candidate_branch_is_created_at_the_tagged_commit_when_there_is_none(self):
+        done = self.run_step(self.newer)
+
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.branch(), self.newer)
+
+    def test_candidate_branch_moves_forward_without_force_to_a_tagged_commit_that_contains_it(self):
+        self.set_branch(self.older)
+
+        done = self.run_step(self.newer)
+
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.branch(), self.newer)
+        self.assertEqual(len(self.calls()), 1)
+        self.assertIn('force=false', self.calls()[0])
+
+    def test_candidate_branch_stays_and_the_step_does_not_fail_for_an_older_candidate(self):
+        self.set_branch(self.newer)
+
+        done = self.run_step(self.older)
+
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.branch(), self.newer)
+        self.assertEqual(self.calls(), [])
+
+    def test_candidate_branch_stays_and_the_step_does_not_fail_for_another_line_of_history(self):
+        self.set_branch(self.newer)
+
+        done = self.run_step(self.other)
+
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.branch(), self.newer)
+        self.assertEqual(self.calls(), [])
+
+    def test_a_move_the_repository_refuses_fails_the_step(self):
+        self.set_branch(self.older)
+        # The client refuses every move: the step must not report success.
+        (self.bin / 'gh').write_text('#!/bin/sh\nexit 1\n')
+
+        done = self.run_step(self.newer)
+
+        self.assertNotEqual(done.returncode, 0)
+        self.assertEqual(self.branch(), self.older)
+
+    def test_only_a_candidate_reaches_the_branch(self):
+        lines = self.workflow_lines()
+        start, end = self.step_bounds()
+        checkout = max(number for number in range(start) if lines[number].startswith('      - '))
+        condition = "if: needs.gate.outputs.mode == 'candidate'"
+
+        self.assertIn(condition, [line.strip() for line in lines[start:end]])
+        self.assertIn(condition, [line.strip() for line in lines[checkout:start]])
+        outside = [line for number, line in enumerate(lines) if not start <= number < end and 'git/refs' in line]
+        self.assertEqual(outside, [])
 
 
 def _parse(path):

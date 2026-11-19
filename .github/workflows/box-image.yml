@@ -2,11 +2,10 @@
 # release, moves the release channel of the series that boxes follow.
 #
 # The push of a tag box-<series>-<release> is the only automatic trigger: a push runs the workflows of its own
-# commit, while a manual start needs this file on the default branch, which holds the older code until the box
-# work is merged. After the merge the manual start works too: start it from the series branch, which the
+# commit. A manual start needs this file on the default branch; start it from the series branch, which the
 # environments below list by its exact name, so both kinds of release publish from there.
-#   box-<series>-rc.<n>  builds a CANDIDATE from any commit and publishes a pre-release. While the series branch
-#                        holds no box/build/check_release.sh yet, this is the only kind of tag accepted.
+#   box-<series>-rc.<n>  builds a CANDIDATE from any commit and publishes a pre-release. When the series branch
+#                        holds no box/build/check_release.sh, this is the only kind of tag accepted.
 #   any other release    builds a supported image. The checker of the SERIES BRANCH (never the one in the tagged
 #                        tree) refuses it unless its commit is on the series branch and its pointer is not a
 #                        candidate's.
@@ -17,7 +16,10 @@
 #   build    the image; it fails if its own reading of the tag differs from the gate's
 #   publish  the release page. A supported release runs in the environment box-release (the owner approves); a
 #            candidate runs in the environment box-candidate, which holds no secret. A supported release page is
-#            never replaced, only a candidate's files are
+#            never replaced, only a candidate's files are. A candidate then moves the branch its boxes follow
+#            (box-candidate/<series>): created when there is none, moved forward when the tagged commit contains
+#            the branch head, left where it is otherwise (the step says so and the image stays published). A
+#            supported release never touches that branch
 #   advance  supported release only: refuses a withdrawn release, then moves refs/heads/box-release/<series>, the
 #            ref boxes follow, to the tagged commit, in the environment box-release and with the deploy key of
 #            that environment. It moves the channel forward only. "Re-run failed jobs" finishes an advance that
@@ -93,7 +95,7 @@ jobs:
             bash "$RUNNER_TEMP/check_release.sh" tag "$TAG" --series-ref "origin/${series}" --repository "$PWD" \
               > "$RUNNER_TEMP/facts.raw"
           else
-            echo "The branch ${series} holds no checker yet: only a candidate tag is accepted."
+            echo "The branch ${series} holds no checker: only a candidate tag is accepted."
             fallback=true
             if [[ ! "$TAG" =~ ^box-[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]; then
               echo "::error::$TAG is not a candidate tag, and the branch ${series} holds no checker to decide a supported release"
@@ -202,7 +204,6 @@ jobs:
           SERIES: ${{ needs.gate.outputs.series }}
           RELEASE: ${{ needs.gate.outputs.release }}
           CHANNEL: ${{ needs.gate.outputs.channel }}
-          LAYER_COMMIT: ${{ needs.gate.outputs.layer_commit }}
         run: |
           set -o errexit -o nounset -o pipefail
           page_exists=false
@@ -219,9 +220,6 @@ jobs:
           written to a box that serves a customer. A box written from it follows the branch \`${CHANNEL#refs/heads/}\`.
           NOTES
             kind=(--prerelease --latest=false)
-            # The branch a candidate box follows starts at the tagged commit; an existing one is never moved here.
-            gh api "repos/${GH_REPO}/git/refs" -f "ref=${CHANNEL}" -f "sha=${LAYER_COMMIT}" > /dev/null \
-              || echo "The branch ${CHANNEL} exists already and stays where it is."
           else
             if [ "$page_exists" = true ]; then
               echo "::error::a supported release is never replaced; publish a new release"
@@ -243,6 +241,55 @@ jobs:
           else
             gh release create "$TAG" out/* --verify-tag --title "$title" --notes-file notes.md "${kind[@]}"
           fi
+      # Only a candidate reaches the branch its boxes follow, and only after its page is published, so a branch
+      # that cannot be moved fails this step and leaves the image published. A supported release skips both steps.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.gate.outputs.mode == 'candidate'
+        with:
+          ref: ${{ needs.gate.outputs.layer_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The branch the candidate boxes follow
+        if: needs.gate.outputs.mode == 'candidate'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CHANNEL: ${{ needs.gate.outputs.channel }}
+          LAYER_COMMIT: ${{ needs.gate.outputs.layer_commit }}
+        run: |
+          set -o errexit -o nounset -o pipefail
+          branch_head() {
+            git ls-remote "https://github.com/${GH_REPO}.git" "$CHANNEL" | awk -v ref="$CHANNEL" '$2 == ref {print $1}'
+          }
+          head="$(branch_head)"
+          if [ -n "$head" ]; then
+            git fetch --quiet "https://github.com/${GH_REPO}.git" "+${CHANNEL}:refs/remotes/candidate-channel"
+          fi
+          # No branch: create it. The tagged commit contains the branch head: move the branch forward to it.
+          # Otherwise (the candidate does not contain the branch head) the branch stays; the image is still published.
+          step="$(bash box/build/check_release.sh candidate-step "$LAYER_COMMIT" ${head:+"$head"})"
+          case "$step" in
+            create)
+              gh api "repos/${GH_REPO}/git/refs" -f "ref=${CHANNEL}" -f "sha=${LAYER_COMMIT}" > /dev/null
+              ;;
+            advance)
+              gh api --method PATCH "repos/${GH_REPO}/git/refs/${CHANNEL#refs/}" -f "sha=${LAYER_COMMIT}" -F force=false > /dev/null
+              ;;
+            keep)
+              echo "The branch ${CHANNEL} is at ${head}, which ${LAYER_COMMIT} does not contain: the branch stays where it is."
+              exit 0
+              ;;
+            *)
+              echo "::error::the candidate step is neither create, advance nor keep: ${step}"
+              exit 1
+              ;;
+          esac
+          seen="$(branch_head)"
+          if [ "$seen" != "$LAYER_COMMIT" ]; then
+            echo "::error::the branch ${CHANNEL} shows ${seen:-nothing} after the ${step}, not ${LAYER_COMMIT}"
+            exit 1
+          fi
+          echo "The branch ${CHANNEL} is at ${LAYER_COMMIT} (${step})."
 
   advance:
     name: Move the release channel

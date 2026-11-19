@@ -12,6 +12,13 @@
 #       way is refused; every other one is supported. A supported release starts with a digit and its series is
 #       NN.N (two digits, a dot, one digit), and it is refused unless its commit is contained in REF (the series
 #       branch), so an unmerged branch never makes one.
+#   check_release.sh candidate-step TAGGED_COMMIT [BRANCH_HEAD] [--repository DIR]
+#       What the release workflow does with the branch a candidate box follows, decided from two commits and
+#       printed as one word: create (BRANCH_HEAD is not given: there is no branch), advance (TAGGED_COMMIT contains
+#       BRANCH_HEAD: the branch moves forward to it) or keep (it does not: the branch stays where it is, so a
+#       candidate that does not contain the one boxes follow never takes them back).
+#       Both are full commit ids and the repository (default: the one this file is in) holds them. The branch is
+#       only for a candidate: a supported release never reaches this step.
 #
 # On success it prints one "key=value" line per fact (series, release, candidate, odoo_commit, min_image,
 # and for a tag also mode, layer_commit, channel) and exits 0. On failure it says why on stderr and exits 1.
@@ -112,6 +119,38 @@ check_tag() {
     fi
 }
 
+check_candidate_step() {
+    local tagged="${1:-}" head="" repository="" commit
+    [ $# -eq 0 ] || shift
+    [ -n "${tagged}" ] || fail "candidate-step needs the commit of the tag"
+    if [ $# -gt 0 ] && [ "${1#--}" = "$1" ]; then
+        head="$1"
+        shift
+    fi
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --repository) repository="${2:?--repository needs a value}"; shift 2 ;;
+            *) fail "unknown option $1" ;;
+        esac
+    done
+    [[ "${tagged}" =~ ^[0-9a-f]{40}$ ]] || fail "the commit of the tag is not a full commit id"
+    if [ -z "${head}" ]; then
+        echo create
+        return 0
+    fi
+    [[ "${head}" =~ ^[0-9a-f]{40}$ ]] || fail "the head of the branch is not a full commit id"
+    repository="${repository:-$(git rev-parse --show-toplevel)}"
+    for commit in "${tagged}" "${head}"; do
+        git -C "${repository}" rev-parse --verify --quiet "${commit}^{commit}" > /dev/null \
+            || fail "the repository holds no commit ${commit}"
+    done
+    if git -C "${repository}" merge-base --is-ancestor "${head}" "${tagged}"; then
+        echo advance
+    else
+        echo keep
+    fi
+}
+
 main() {
     case "${1:-}" in
         pointer)
@@ -124,7 +163,11 @@ main() {
             shift
             check_tag "$@"
             ;;
-        *) fail "usage: check_release.sh pointer [FILE] | tag TAG [--series-ref REF] [--repository DIR]" ;;
+        candidate-step)
+            shift
+            check_candidate_step "$@"
+            ;;
+        *) fail "usage: check_release.sh pointer [FILE] | tag TAG [--series-ref REF] [--repository DIR] | candidate-step TAGGED_COMMIT [BRANCH_HEAD] [--repository DIR]" ;;
     esac
 }
 

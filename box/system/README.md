@@ -25,6 +25,7 @@ stops no other service.
 | `etc/systemd/system/odoo.service.d/viindoo.conf` | Runs the guard before each start, and after each stop, of the box service, and bounds the name look-ups of that service to about 4 seconds per name server |
 | `usr/local/sbin/viin-box-guard` | The roll-back guard |
 | `etc/avahi/services/viindoo-iot.service` | Announces the page of the box on the local network |
+| `etc/chromium/policies/managed/viindoo-local-network.json` | Lets the kiosk browser of the box open the customer screen without asking whether the page may reach the local network |
 | `etc/systemd/system/viin-box-first-start.service`, `usr/local/sbin/viin-box-first-start` | Give a new box its own master password and host name |
 | `etc/systemd/system/viin-box-wifi.service`, `usr/local/sbin/viin-box-wifi` | Join the Wi-Fi network the box keeps, or wait for the address of a cable, before the access point of the box is decided on |
 | `etc/systemd/system/viin-box-wifi-watch.service` | Bring the box back to the Wi-Fi network it keeps while it runs, from its access point too; stop the access point once the box has an address on another network |
@@ -50,7 +51,7 @@ trusted certificates. Each pair is written whole into a directory of its own,
 `privkey.pem` (the key alone); the link `current` names the pair in use, and the web server
 reads both files through it. A pair takes its place by one rename of that link, so after a
 power cut the box serves the previous pair or the new one, never a key with the certificate
-of another. The directories of pairs no longer in use are removed once the new one is served,
+of another. The directories of pairs not in use are removed once the new one is served,
 or at the next start.
 
 Rules live in `box.conf` only. They add one header to the answers of the box service:
@@ -67,6 +68,13 @@ the browser sent; the box service believes it only from the web server itself.
 Without a certificate, on port 80, the box serves a request only when it names an address or
 the host name of the box; any other name is sent on to the address the request arrived at.
 With a certificate the name is checked by the browser, against the certificate.
+
+## Kiosk browser
+
+The browser of the box that shows the customer screen reads the managed policy files of
+`/etc/chromium/policies/managed/`. `viindoo-local-network.json` allows every page to reach a device of the
+local network, so the customer screen, a page of the server, shows the till without a permission question. The
+file is installed in `/etc` and on the card like every file of `etc/`, and applies the next time the browser starts.
 
 ## First start
 
@@ -161,7 +169,7 @@ restart of the box service it asks for, is over, and a join asked meanwhile is n
 page says the box is busy, and the join may be asked again a minute later. The program also holds
 the lock for a moment at each look, even when it changes nothing: a join asked then waits a few
 seconds for it before the page is told so. A network forgotten is
-no longer looked for. A stop of the watch, as `apply.sh` asks after an update, waits for the look
+not looked for. A stop of the watch, as `apply.sh` asks after an update, waits for the look
 it is in to end.
 
 ## Access point
@@ -181,7 +189,7 @@ On a box the user `pi` is root, as on the box of Odoo Community: the base system
 command through `sudo` without a password (`/etc/sudoers.d/010_pi-nopasswd`), and core relies on
 that for `chpasswd`, `iwlist`, `service` and for the `mkdir`, `chown` and `timedatectl` its service
 unit runs. The layer adds no sudo rules of its own, and `install_layer.sh` removes
-`/etc/sudoers.d/011_viindoo-iot-box`, which an earlier version wrote. `install_on_raspios.sh`
+`/etc/sudoers.d/011_viindoo-iot-box` where a box holds it. `install_on_raspios.sh`
 writes `010_pi-nopasswd` itself when it has to create the user `pi`.
 
 No list of commands could limit the user, because the box runs scripts of the tree that user owns
