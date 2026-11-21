@@ -1,0 +1,7 @@
+// Package downloads of the image build. The image a customer writes does not carry this file.
+// A download from a source that does not answer is given up on after one retry, and apt takes the package from the
+// next source it lists (sources.list.d/viindoo-build.list). The file sorts after the settings core's image script
+// writes, so the values below are the ones in force.
+Acquire::Retries "1";
+Acquire::http::Timeout "10";
+Acquire::https::Timeout "10";

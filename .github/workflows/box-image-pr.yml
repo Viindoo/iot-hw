@@ -85,6 +85,8 @@ jobs:
           sudo systemctl daemon-reload
           sudo systemctl start NetworkManager.service
       - name: Build
+        # Ends a step that no other limit of the build has ended, far sooner than the limit of the job.
+        timeout-minutes: 75
         env:
           TAG: ${{ steps.facts.outputs.tag }}
           MODE: ${{ steps.facts.outputs.mode }}

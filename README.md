@@ -374,7 +374,12 @@ nor the payment-terminal programs that the image script of core downloads; the i
 
 The build needs hosts outside Viindoo's control (the operating system download, the Debian and Python
 mirrors, and the hosts the image script of core fetches from). When one is down the build fails; no box is
-touched.
+touched. During the build apt installs the version that the operating system's own package source lists and takes it
+from another source only when that download fails (`box/build/apt/` lists two such sources, ranks them below the
+operating system's own, and is not part of the image). A download from a mirror that stalls is given up on after the
+retries and timeout in `box/build/apt/etc/apt/apt.conf.d/99zz-viindoo-build`, and many stalled downloads add up until
+the time limit of the workflow step ends the build. A listed mirror that is gone or out of sync fails no build: a
+failed update is repeated without it.
 
 The workflow `box-image.yml` does the same on a hosted runner when a tag `box-*` is pushed, and passes
 `--expect-mode` with the kind of release its gate decided; the script stops if its own reading of the tag

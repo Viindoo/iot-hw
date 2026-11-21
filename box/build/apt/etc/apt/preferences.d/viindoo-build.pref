@@ -1,0 +1,10 @@
+# Priorities of the image build; the image a customer writes does not carry this file. The extra sources of
+# sources.list.d/viindoo-build.list rank below the sources of the operating system, so apt keeps the version
+# that the operating system's own source lists and takes it from an extra source only when its download fails.
+Package: *
+Pin: origin www.mirrorservice.org
+Pin-Priority: 400
+
+Package: *
+Pin: origin mirror.us.leaseweb.net
+Pin-Priority: 400
