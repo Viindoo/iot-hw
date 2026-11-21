@@ -15,6 +15,10 @@
 # unmodified, on the pinned operating system; (4) install the layer in the image it made; (5) check what went in,
 # clear free space, compress, and write the checksum file and the manifest.
 #
+# Package downloads of steps (3) and (4) do not depend on one mirror: the files of box/build/apt/ are put in the image
+# before its script installs packages, and taken out again before the checks of step (5), which fail an image that
+# still holds one. Its apt-get repeats an update that fails while the extra sources are listed without them.
+#
 # Step (1) comes first, right after the options: the tag is read, and --expect-mode and --expect-commit are checked,
 # before root, the tools named below or any work directory are needed. It needs only bash, git and python3.
 #
@@ -38,6 +42,12 @@ source "${here}/base-image.conf"
 readonly POSBOX=addons/point_of_sale/tools/posbox
 readonly BOX_REQUIREMENTS="git python3 kpartx qemu-arm-static zerofree xz rsync fdisk wget unxz sha256sum chroot mount"
 readonly REMOVED_FROM_IMAGE="usr/bin/ngrok usr/local/bin/eftdvs usr/lib/eftapi.so"
+# The package configuration of the build only, as a tree of the paths it has in the image.
+readonly BUILD_ONLY_APT="${here}/apt"
+# Where the programs of the image are looked for while the image script of core and the layer installer run: the
+# apt-get of box/build/apt comes first. The image script of core gives its chroot the path it has itself, so the
+# directories of the image are put in front of the path of the host, which keeps the tools of the host in reach.
+readonly IMAGE_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # The unit of the base system that makes the SSH host keys of a box at its first start.
 readonly HOST_KEY_UNIT=regenerate_ssh_host_keys.service
 
@@ -83,6 +93,30 @@ prepare_core() {
     grep --quiet --fixed-strings "${BASE_IMAGE_NAME}" "${posbox_dir}/posbox_create_image.sh" \
         || fail "the image script of core builds on another operating system than the one pinned in base-image.conf"
     refuse_core_tracing
+}
+
+# The paths, in the image, of the package configuration of the build only, one a line.
+build_only_apt_files() {
+    (cd "${BUILD_ONLY_APT}" && find . -type f | sed 's|^\./||' | sort)
+}
+
+# The start of the names apt gives the index files it keeps of each source of the build only, in /var/lib/apt/lists:
+# the address of the source with its slashes made underscores, then dists and the suite.
+build_only_apt_list_prefixes() {
+    local file
+    while read -r file; do
+        sed -n -E 's#^deb[[:space:]]+(\[[^]]*\][[:space:]]+)?https?://([^[:space:]]+)[[:space:]]+([^[:space:]]+).*#\2dists/\3_#p' \
+            "${BUILD_ONLY_APT}/${file}" | tr / _
+    done < <(build_only_apt_files | grep '\.list$')
+}
+
+# The image script of core copies this directory into the image before it installs a package.
+place_build_only_apt_configuration() {
+    local file
+    while read -r file; do
+        install -D --mode "$(stat --format %a "${BUILD_ONLY_APT}/${file}")" "${BUILD_ONLY_APT}/${file}" \
+            "${posbox_dir:?}/overwrite_before_init/${file}"
+    done < <(build_only_apt_files)
 }
 
 # The log of a build is public and a trace prints every assignment, so the password of the box user would
@@ -139,7 +173,7 @@ run_withholding_password() {
 }
 
 core_script() {
-    (cd "${posbox_dir}" && printf '%s\n%s\n' "${series}" Viindoo | bash ./posbox_create_image.sh)
+    (cd "${posbox_dir}" && printf '%s\n%s\n' "${series}" Viindoo | PATH="${IMAGE_PATH}:${PATH}" bash ./posbox_create_image.sh)
 }
 
 run_core_script() {
@@ -149,7 +183,7 @@ run_core_script() {
 
 # Runs a command inside the image, on the mounted root.
 in_image() {
-    chroot "${root}" "$@"
+    chroot "${root}" env "PATH=${IMAGE_PATH}" "$@"
 }
 
 install_layer_in_image() {
@@ -185,7 +219,44 @@ install_layer_in_image() {
     in_image /tmp/box-install/install_layer.sh --layer-ref "${tag}" --layer-source "${layer_source}" "${install_args[@]}"
     rm -rf "${root:?}${layer_source}" "${root:?}/tmp/box-install"
     rm -f "${root:?}/usr/sbin/policy-rc.d"
+    remove_build_only_apt_configuration
     remove_ssh_host_keys
+}
+
+# What apt keeps of the sources it has read, besides the index files: the caches it builds from them.
+readonly APT_CACHE_FILES=(var/cache/apt/pkgcache.bin var/cache/apt/srcpkgcache.bin)
+
+# The index files apt keeps of the sources of the build, finished and being fetched, one path a line.
+build_only_apt_list_files() {
+    local prefix directory
+    while read -r prefix; do
+        for directory in var/lib/apt/lists var/lib/apt/lists/partial; do
+            compgen -G "${root}/${directory}/${prefix}*" || true
+        done
+    done < <(build_only_apt_list_prefixes)
+}
+
+# The image a customer writes keeps the package sources and settings of the operating system: what only the build
+# used goes, with the index files and the caches apt built from the sources of the build.
+remove_build_only_apt_configuration() {
+    local file
+    while read -r file; do
+        rm -f -- "${root:?}/${file}"
+    done < <(build_only_apt_files; printf '%s\n' "${APT_CACHE_FILES[@]}")
+    while read -r file; do
+        rm -f -- "${file}"
+    done < <(build_only_apt_list_files)
+}
+
+refuse_build_only_apt_configuration() {
+    local file left=""
+    while read -r file; do
+        [ ! -e "${root}/${file}" ] || left="${left} /${file}"
+    done < <(build_only_apt_files; printf '%s\n' "${APT_CACHE_FILES[@]}")
+    while read -r file; do
+        left="${left} ${file#"${root}"}"
+    done < <(build_only_apt_list_files)
+    [ -z "${left}" ] || fail "the image still holds package configuration of the build:${left}"
 }
 
 # The SSH host key files of the mounted image, one path a line.
@@ -226,6 +297,7 @@ verify_and_describe_image() {
     for path in ${REMOVED_FROM_IMAGE}; do
         [ ! -e "${root}/${path}" ] || fail "the image still holds /${path}"
     done
+    refuse_build_only_apt_configuration
     refuse_ssh_host_keys
     [ -f "${root}/boot/config.txt" ] || fail "the image holds no /boot/config.txt"
     firmware_hotplug check "${root}/boot/config.txt" \
@@ -360,6 +432,7 @@ main() {
     fi
     say "building ${image_name} (${mode}) with core ${odoo_commit} and layer ${layer_commit}"
     prepare_core
+    place_build_only_apt_configuration
     place_base_image
     run_core_script
     install_layer_in_image

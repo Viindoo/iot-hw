@@ -1,13 +1,18 @@
 """The scripts that build and install a box: what they keep out of a public log, what they leave in a configuration."""
+import hashlib
+import http.server
 import json
 import os
 import pwd
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import tempfile
 import textwrap
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -21,6 +26,13 @@ RELEASE_CHECK = box.REPOSITORY / 'box' / 'build' / 'check_release.sh'
 APPLY_SCRIPT = box.SYSTEM_FILES / 'apply.sh'
 IMAGE_WORKFLOW = box.REPOSITORY / '.github' / 'workflows' / 'box-image.yml'
 POLICY = 'etc/chromium/policies/managed/viindoo-local-network.json'
+BUILD_APT = box.REPOSITORY / 'box' / 'build' / 'apt'
+BUILD_APT_SETTINGS = next((BUILD_APT / 'etc' / 'apt' / 'apt.conf.d').iterdir())
+BUILD_APT_SOURCES = next((BUILD_APT / 'etc' / 'apt' / 'sources.list.d').iterdir())
+BUILD_APT_GET = BUILD_APT / 'usr' / 'local' / 'bin' / 'apt-get'
+BUILD_APT_PINS = BUILD_APT / 'etc' / 'apt' / 'preferences.d' / 'viindoo-build.pref'
+# The text core's image script writes to /etc/apt/apt.conf.d/99acquire-retries.
+CORE_APT_RETRIES = 'Acquire::Retries 16;\n'
 SECRET = 'S3cretFromCore'
 
 
@@ -973,6 +985,584 @@ class TestCandidateBranchStepOfTheWorkflow(unittest.TestCase):
         self.assertIn(condition, [line.strip() for line in lines[checkout:start]])
         outside = [line for number, line in enumerate(lines) if not start <= number < end and 'git/refs' in line]
         self.assertEqual(outside, [])
+
+
+class TestBuildOnlyPackageConfiguration(unittest.TestCase):
+    """The package settings and sources only the image build uses are in the image while it installs packages and
+    are not in the image a customer writes."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.scratch = Path(directory.name)
+
+    def image_root(self):
+        """An image root that holds the files of the operating system the build leaves alone."""
+        root = self.scratch / 'root'
+        (root / 'etc' / 'apt' / 'apt.conf.d').mkdir(parents=True)
+        (root / 'var' / 'lib' / 'apt' / 'lists').mkdir(parents=True)
+        (root / 'etc' / 'apt' / 'sources.list').write_text('deb http://stock.example.invalid/raspbian/ bookworm main\n')
+        (root / 'etc' / 'apt' / 'apt.conf.d' / '99acquire-retries').write_text(CORE_APT_RETRIES)
+        lists = root / 'var' / 'lib' / 'apt' / 'lists'
+        (lists / 'stock.example.invalid_raspbian_dists_bookworm_InRelease').write_text('x')
+        return root
+
+    def hold_build_only_files(self, root):
+        for path in BUILD_APT.rglob('*'):
+            if path.is_file():
+                target = root / path.relative_to(BUILD_APT)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(path, target)
+        lists = root / 'var' / 'lib' / 'apt' / 'lists'
+        (lists / 'partial').mkdir(exist_ok=True)
+        for _address, name in apt_index_files(self.scratch, BUILD_APT_SOURCES):
+            (lists / f'{name}.lz4').write_text('x')
+            (lists / 'partial' / name).write_text('x')
+        (root / 'var' / 'cache' / 'apt').mkdir(parents=True, exist_ok=True)
+        for name in ('pkgcache.bin', 'srcpkgcache.bin'):
+            (root / 'var' / 'cache' / 'apt' / name).write_text('x')
+
+    def files_of(self, root):
+        return sorted(path.relative_to(root).as_posix() for path in root.rglob('*') if path.is_file())
+
+    def run_function(self, root, function):
+        return _bash(f'source "$1"; root="$2"; {function}', str(BUILD_SCRIPT), str(root))
+
+    def test_files_of_the_build_only_configuration_are_put_where_the_image_script_of_core_copies_them_from(self):
+        posbox = self.scratch / 'posbox'
+        (posbox / 'overwrite_before_init').mkdir(parents=True)
+
+        done = _bash('source "$1"; posbox_dir="$2"; place_build_only_apt_configuration', str(BUILD_SCRIPT), str(posbox))
+
+        self.assertEqual(done.returncode, 0, done.stderr)
+        kept = {path.relative_to(BUILD_APT) for path in BUILD_APT.rglob('*') if path.is_file()}
+        self.assertIn(BUILD_APT_SETTINGS.relative_to(BUILD_APT), kept)
+        self.assertIn(BUILD_APT_SOURCES.relative_to(BUILD_APT), kept)
+        for relative in kept:
+            placed = posbox / 'overwrite_before_init' / relative
+            self.assertEqual(placed.read_bytes(), (BUILD_APT / relative).read_bytes(), relative)
+            self.assertEqual(stat.S_IMODE(placed.stat().st_mode), stat.S_IMODE((BUILD_APT / relative).stat().st_mode))
+        self.assertTrue(os.access(posbox / 'overwrite_before_init' / BUILD_APT_GET.relative_to(BUILD_APT), os.X_OK))
+
+    def test_build_only_configuration_and_the_index_files_of_its_sources_leave_the_image_and_nothing_else_does(self):
+        root = self.image_root()
+        stock = self.files_of(root)
+        self.hold_build_only_files(root)
+        self.assertNotEqual(self.files_of(root), stock)
+
+        done = self.run_function(root, 'remove_build_only_apt_configuration')
+
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.files_of(root), stock)
+
+    def test_image_that_still_holds_a_file_of_the_build_only_configuration_is_refused_and_the_path_is_named(self):
+        root = self.image_root()
+        self.hold_build_only_files(root)
+
+        done = self.run_function(root, 'refuse_build_only_apt_configuration')
+
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn(f'/{BUILD_APT_SETTINGS.relative_to(BUILD_APT).as_posix()}', done.stderr)
+        self.assertIn(f'/{BUILD_APT_SOURCES.relative_to(BUILD_APT).as_posix()}', done.stderr)
+
+    def test_image_that_still_holds_an_index_file_of_a_source_of_the_build_is_refused_and_the_path_is_named(self):
+        root = self.image_root()
+        _address, name = apt_index_files(self.scratch, BUILD_APT_SOURCES)[0]
+        left = root / 'var' / 'lib' / 'apt' / 'lists' / f'{name}.lz4'
+        left.write_text('x')
+
+        done = self.run_function(root, 'refuse_build_only_apt_configuration')
+
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn(f'/var/lib/apt/lists/{left.name}', done.stderr)
+
+    def test_image_that_still_holds_what_apt_kept_of_the_sources_of_the_build_is_refused_and_the_paths_are_named(self):
+        root = self.image_root()
+        self.hold_build_only_files(root)
+        for path in BUILD_APT.rglob('*'):
+            if path.is_file():
+                (root / path.relative_to(BUILD_APT)).unlink()
+
+        done = self.run_function(root, 'refuse_build_only_apt_configuration')
+
+        self.assertNotEqual(done.returncode, 0)
+        _address, name = apt_index_files(self.scratch, BUILD_APT_SOURCES)[0]
+        self.assertIn(f'/var/lib/apt/lists/partial/{name}', done.stderr)
+        self.assertIn('/var/cache/apt/pkgcache.bin', done.stderr)
+        self.assertIn('/var/cache/apt/srcpkgcache.bin', done.stderr)
+
+    def test_image_script_of_core_finds_the_apt_get_of_the_build_first_and_keeps_the_tools_of_the_host(self):
+        posbox = self.scratch / 'posbox'
+        posbox.mkdir()
+        (posbox / 'posbox_create_image.sh').write_text('echo "$PATH"\n')
+
+        done = _bash('PATH=/opt/host-tools:/usr/bin:/bin; source "$1"; posbox_dir="$2"; series=18.0; core_script',
+                     str(BUILD_SCRIPT), str(posbox))
+
+        directories = done.stdout.strip().split(':')
+        self.assertLess(directories.index(f'/{BUILD_APT_GET.parent.relative_to(BUILD_APT).as_posix()}'),
+                        directories.index('/usr/bin'))
+        self.assertIn('/opt/host-tools', directories)
+
+    def test_command_run_in_the_image_is_given_a_path_that_finds_the_apt_get_of_the_build_first(self):
+        done = _bash('chroot() { printf "%s\\n" "$@"; }; source "$1"; root=/image; in_image echo done',
+                     str(BUILD_SCRIPT))
+
+        lines = done.stdout.splitlines()
+        path = next(line for line in lines if line.startswith('PATH=')).removeprefix('PATH=').split(':')
+        wrapper_directory = f'/{BUILD_APT_GET.parent.relative_to(BUILD_APT).as_posix()}'
+        self.assertLess(path.index(wrapper_directory), path.index('/usr/bin'))
+        self.assertEqual(lines[0], '/image')
+        self.assertEqual(lines[-2:], ['echo', 'done'])
+
+    def test_image_with_the_package_files_of_the_operating_system_only_is_not_refused(self):
+        done = self.run_function(self.image_root(), 'refuse_build_only_apt_configuration')
+
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_the_verification_of_the_image_refuses_an_image_that_holds_the_build_only_configuration(self):
+        root = self.image_root()
+        self.hold_build_only_files(root)
+
+        done = self.run_function(root, 'verify_and_describe_image')
+
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn(f'/{BUILD_APT_SETTINGS.relative_to(BUILD_APT).as_posix()}', done.stderr)
+
+
+def apt_index_files(scratch, sources_file):
+    """Ask apt which index files the sources in `sources_file` make, without any network.
+
+    :param scratch: a directory to work in
+    :param sources_file: a file of source lines
+    :return: the address and the name, in the directory apt keeps index files in, of each index file
+    """
+    parts = Path(scratch, 'sources-parts')
+    parts.mkdir(exist_ok=True)
+    shutil.copy(sources_file, parts / 'only.list')
+    state = Path(scratch, 'sources-state', 'lists', 'partial')
+    state.mkdir(parents=True, exist_ok=True)
+    done = subprocess.run(
+        ['apt-get', 'update', '--print-uris', '-o', 'Dir::Etc::sourcelist=/dev/null',
+         '-o', f'Dir::Etc::sourceparts={parts}', '-o', f'Dir::State={state.parent.parent}', '-o', 'Debug::NoLocking=1'],
+        capture_output=True, text=True, check=True, timeout=60)
+    return [tuple(line.split()[:2]) for line in done.stdout.splitlines() if line.startswith("'")]
+
+
+class PackageMirrors:
+    """A repository of one package behind a primary address that answers like a mirror director: it serves the
+    indexes itself and redirects each package to another address."""
+
+    PACKAGE = 'hello-exp'
+
+    def __init__(self, scratch, cleanup):
+        self.scratch = Path(scratch)
+        self.cleanup = cleanup
+        self.repository = self.scratch / 'repository'
+        self.digest = self.build_repository(self.repository, '1.0')
+
+    def build_repository(self, repository, version):
+        """Make a repository at `repository` that holds the package at `version`; the digest of the package."""
+        (repository / 'dists' / 'bookworm' / 'main' / 'binary-armhf').mkdir(parents=True)
+        (repository / 'pool').mkdir()
+        source = repository.parent / f'package-{version}' / 'DEBIAN'
+        source.mkdir(parents=True)
+        (source / 'control').write_text(f'Package: {self.PACKAGE}\nVersion: {version}\nArchitecture: armhf\n'
+                                        'Maintainer: Box Test <box@example.invalid>\nDescription: test package\n')
+        archive = repository / 'pool' / f'{self.PACKAGE}_{version}_armhf.deb'
+        subprocess.run(['dpkg-deb', '--build', str(source.parent), str(archive)], check=True, capture_output=True,
+                       timeout=60)
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        packages = (f'Package: {self.PACKAGE}\nVersion: {version}\nArchitecture: armhf\n'
+                    f'Maintainer: Box Test <box@example.invalid>\nFilename: pool/{archive.name}\n'
+                    f'Size: {archive.stat().st_size}\nSHA256: {digest}\nDescription: test package\n').encode()
+        (repository / 'dists' / 'bookworm' / 'main' / 'binary-armhf' / 'Packages').write_bytes(packages)
+        (repository / 'dists' / 'bookworm' / 'Release').write_text(
+            'Suite: bookworm\nCodename: bookworm\nArchitectures: armhf\nComponents: main contrib non-free rpi\n'
+            'Date: Mon, 01 Jan 2024 00:00:00 UTC\nSHA256:\n'
+            f' {hashlib.sha256(packages).hexdigest()} {len(packages)} main/binary-armhf/Packages\n')
+        return digest
+
+    def serve(self, address, handler):
+        server = http.server.ThreadingHTTPServer((address, 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.cleanup(server.server_close)
+        self.cleanup(server.shutdown)
+        return f'http://{address}:{server.server_address[1]}'
+
+    def holding_everything(self, address, repository=None):
+        """A mirror at `address` that holds the whole repository, or the one at `repository`; its address."""
+        directory = str(repository or self.repository)
+
+        class Handler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *arguments, **keywords):
+                super().__init__(*arguments, directory=directory, **keywords)
+
+            def log_message(self, *arguments):
+                pass
+
+        return self.serve(address, Handler)
+
+    def answering_with_a_redirect(self, address, mirror):
+        """A primary address at `address`: indexes from itself, every package redirected to `mirror`."""
+        repository = self.repository
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                path = self.path.removeprefix('/raspbian')
+                if '/dists/' in path:
+                    target = repository / path.lstrip('/')
+                    if target.is_file():
+                        body = target.read_bytes()
+                        self.send_response(200)
+                        self.send_header('Content-Length', str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+                    return
+                self.send_response(302)
+                self.send_header('Location', f'{mirror}{path}')
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+
+            def log_message(self, *arguments):
+                pass
+
+        return self.serve(address, Handler)
+
+    def one_version_ahead(self, address):
+        """A mirror at `address` that holds the package at a version the other mirrors do not list yet."""
+        repository = self.scratch / 'ahead'
+        self.build_repository(repository, '2.0')
+        return self.holding_everything(address, repository)
+
+    def stalled(self, address):
+        """A mirror at `address` that accepts a connection and sends nothing."""
+        stop = threading.Event()
+        self.cleanup(stop.set)
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                stop.wait(600)
+
+            def log_message(self, *arguments):
+                pass
+
+        return self.serve(address, Handler)
+
+    def gone(self, address):
+        """A mirror at `address` that answers every request with "not found"."""
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(404)
+                self.end_headers()
+
+            def log_message(self, *arguments):
+                pass
+
+        return self.serve(address, Handler)
+
+    def out_of_sync(self, address):
+        """A mirror at `address` whose package index is not the one its release file describes."""
+        directory = str(self.repository)
+
+        class Handler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *arguments, **keywords):
+                super().__init__(*arguments, directory=directory, **keywords)
+
+            def do_GET(self):
+                if not self.path.endswith('/Packages'):
+                    return super().do_GET()
+                body = b'Package: another\nVersion: 2\nArchitecture: armhf\nDescription: not the indexed state\n'
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *arguments):
+                pass
+
+        return self.serve(address, Handler)
+
+    @staticmethod
+    def unreachable(address):
+        """An address and a port nothing listens on."""
+        with socket.socket() as probe:
+            probe.bind((address, 0))
+            return f'http://{address}:{probe.getsockname()[1]}'
+
+
+def build_only_source_line(address):
+    """The first source line of the build, with the address of a mirror of the test in place of its own."""
+    line = next(line for line in BUILD_APT_SOURCES.read_text().splitlines() if line.startswith('deb '))
+    found = re.fullmatch(r'deb \[ (?P<options>[^\]]*) \] \S+ (?P<rest>.*)', line)
+    return f'deb [ {found.group("options")} trusted=yes ] {address}/ {found.group("rest")}'
+
+
+class AptCase(unittest.TestCase):
+    """A scratch apt that reads sources and settings of the test, and servers that stand for mirrors."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.scratch = Path(directory.name)
+        self.mirrors = PackageMirrors(self.scratch, self.addCleanup)
+
+    def apt_environment(self, sources, settings, source_files=None, preferences=None):
+        """The environment of an apt that reads the source lines `sources`, the files `source_files` (name: text)
+        of sources.list.d, the files `settings` (name: text) of apt.conf.d and the files `preferences` (name: text)
+        of preferences.d."""
+        root = self.scratch / 'apt'
+        for name in ('state/lists/partial', 'cache/archives/partial', 'etc/apt/apt.conf.d', 'etc/apt/sources.list.d',
+                     'etc/apt/preferences.d'):
+            (root / name).mkdir(parents=True, exist_ok=True)
+        for name, text in (preferences or {}).items():
+            (root / 'etc' / 'apt' / 'preferences.d' / name).write_text(text)
+        (root / 'etc' / 'apt' / 'sources.list').write_text(sources)
+        for name, text in (source_files or {}).items():
+            (root / 'etc' / 'apt' / 'sources.list.d' / name).write_text(text)
+        for name, text in settings.items():
+            (root / 'etc' / 'apt' / 'apt.conf.d' / name).write_text(text)
+        (root / 'apt.conf').write_text(
+            f'Dir::Etc "{root}/etc/apt"; Dir::State "{root}/state"; Dir::Cache "{root}/cache"; '
+            'Dir::State::status "/var/lib/dpkg/status"; Dir::Etc::trusted "/dev/null"; '
+            'Dir::Etc::trustedparts "/dev/null"; Debug::NoLocking "true"; '
+            'APT::Architecture "armhf"; APT::Architectures "armhf";')
+        self.lists = root / 'state' / 'lists'
+        return {**os.environ, 'APT_CONFIG': str(root / 'apt.conf')}
+
+    @staticmethod
+    def build_only_pins(host):
+        """The preferences file of the build, with `host` in place of the first host it names."""
+        hosts = iter([host])
+        return re.sub(r'(?m)^(Pin: origin )\S+$', lambda found: found.group(1) + next(hosts, 'unused.invalid'),
+                      BUILD_APT_PINS.read_text())
+
+    @staticmethod
+    def stock_line(primary, path='/raspbian/'):
+        return f'deb [ arch=armhf trusted=yes ] {primary}{path} bookworm main contrib non-free rpi\n'
+
+
+class TestPackageDownloadsOfTheBuild(AptCase):
+    """What apt does with the files of the build while a mirror does not answer, on a repository of its own that
+    holds one package: apt itself runs, as the build runs it inside the image."""
+
+    def download(self, environment):
+        """Update the indexes, then download the package; the downloaded file, or None. `self.seconds` is the time
+        the download took."""
+        subprocess.run(['apt-get', 'update'], env=environment, capture_output=True, check=False, timeout=120)
+        started = time.monotonic()
+        subprocess.run(['apt-get', 'download', PackageMirrors.PACKAGE], env=environment, cwd=self.scratch,
+                       capture_output=True, check=False, timeout=240)
+        self.seconds = time.monotonic() - started
+        found = list(self.scratch.glob('*.deb'))
+        return found[0] if found else None
+
+    @staticmethod
+    def settings_in_force(environment):
+        dump = subprocess.run(['apt-config', 'dump'], env=environment, capture_output=True, text=True, check=True,
+                              timeout=60).stdout
+        return dict(re.findall(r'^(\S+) "([^"]*)";$', dump, re.MULTILINE))
+
+    def build_environment(self, primary, second=None, ranked=True):
+        extra = f'{build_only_source_line(second)}\n' if second else ''
+        pins = {BUILD_APT_PINS.name: self.build_only_pins(re.match(r'http://([^:]+):', second).group(1))} \
+            if second and ranked else {}
+        return self.apt_environment(self.stock_line(primary) + extra,
+                                    {BUILD_APT_SETTINGS.name: BUILD_APT_SETTINGS.read_text()}, preferences=pins)
+
+    @staticmethod
+    def candidate(environment):
+        """Update the indexes and give the version apt would install of the package."""
+        subprocess.run(['apt-get', 'update'], env=environment, capture_output=True, check=False, timeout=120)
+        done = subprocess.run(['apt-cache', 'policy', PackageMirrors.PACKAGE], env=environment, capture_output=True,
+                              text=True, check=True, timeout=60)
+        return re.search(r'Candidate: (\S+)', done.stdout).group(1)
+
+    def test_settings_of_the_build_win_over_the_retries_core_writes_and_bound_the_wait_on_one_source(self):
+        environment = self.apt_environment('', {'99acquire-retries': CORE_APT_RETRIES,
+                                                BUILD_APT_SETTINGS.name: BUILD_APT_SETTINGS.read_text()})
+
+        settings = self.settings_in_force(environment)
+
+        # An attempt on a mirror that accepts a connection and stays silent takes up to twice the timeout.
+        waits = (int(settings['Acquire::Retries']) + 1) * 2 * int(settings['Acquire::http::Timeout'])
+        self.assertLessEqual(waits, 60)
+
+    def test_extra_sources_of_the_build_give_the_same_suite_and_architecture_from_other_hosts_than_the_stock_one(self):
+        indexes = apt_index_files(self.scratch, BUILD_APT_SOURCES)
+
+        self.assertTrue(indexes)
+        hosts = {re.match(r'\'https?://([^/]+)/', address).group(1) for address, _name in indexes}
+        self.assertNotIn('raspbian.raspberrypi.com', hosts)
+        self.assertTrue(all('/dists/bookworm/' in address for address, _name in indexes))
+        self.assertTrue(any('/binary-armhf/' in address for address, _name in indexes))
+        self.assertFalse(any(re.search(r'/binary-(?!armhf|all)', address) for address, _name in indexes))
+
+    def test_package_whose_redirect_names_a_mirror_that_does_not_answer_is_taken_from_the_second_source(self):
+        primary = self.mirrors.answering_with_a_redirect('127.0.0.11', PackageMirrors.unreachable('127.0.0.12'))
+        environment = self.build_environment(primary, self.mirrors.holding_everything('127.0.0.13'))
+
+        downloaded = self.download(environment)
+
+        self.assertIsNotNone(downloaded)
+        self.assertEqual(hashlib.sha256(downloaded.read_bytes()).hexdigest(), self.mirrors.digest)
+
+    def test_package_from_a_mirror_that_accepts_and_stays_silent_comes_from_the_second_source_in_time(self):
+        """Proves, with the settings of the build as they are: one download from a mirror that accepts the connection
+        and sends nothing waits no longer than the settings allow for it, and the package then comes from the second
+        source. Does not prove the total for many packages: apt asks a stalled host for one package after the other,
+        so each adds its wait, and only the time limit of the workflow step bounds the sum."""
+        primary = self.mirrors.answering_with_a_redirect('127.0.0.11', self.mirrors.stalled('127.0.0.12'))
+        environment = self.build_environment(primary, self.mirrors.holding_everything('127.0.0.13'))
+        settings = self.settings_in_force(environment)
+
+        downloaded = self.download(environment)
+
+        self.assertIsNotNone(downloaded)
+        self.assertEqual(hashlib.sha256(downloaded.read_bytes()).hexdigest(), self.mirrors.digest)
+        allowed = (int(settings['Acquire::Retries']) + 1) * 2 * int(settings['Acquire::http::Timeout'])
+        self.assertLessEqual(self.seconds, allowed + 15)
+
+    def test_every_extra_source_of_the_build_is_ranked_below_the_stock_source(self):
+        indexes = apt_index_files(self.scratch, BUILD_APT_SOURCES)
+        sources = {re.match(r'\'https?://([^/]+)/', address).group(1) for address, _name in indexes}
+        text = BUILD_APT_PINS.read_text()
+
+        pinned = re.findall(r'(?m)^Pin: origin (\S+)$', text)
+        priorities = re.findall(r'(?m)^Pin-Priority: (\d+)$', text)
+
+        self.assertEqual(set(pinned), sources)
+        self.assertTrue(all(int(priority) < 500 for priority in priorities))
+        self.assertEqual(len(priorities), len(pinned))
+
+    def test_mirror_that_lists_one_version_more_than_the_stock_source_does_not_change_the_version_installed(self):
+        primary = self.mirrors.holding_everything('127.0.0.11')
+        ahead = self.mirrors.one_version_ahead('127.0.0.13')
+        environment = self.apt_environment(
+            self.stock_line(primary, '/') + f'{build_only_source_line(ahead)}\n',
+            {BUILD_APT_SETTINGS.name: BUILD_APT_SETTINGS.read_text()},
+            preferences={BUILD_APT_PINS.name: self.build_only_pins('127.0.0.13')})
+
+        self.assertEqual(self.candidate(environment), '1.0')
+
+    def test_without_the_ranking_a_mirror_that_lists_one_version_more_decides_the_version_installed(self):
+        primary = self.mirrors.holding_everything('127.0.0.11')
+        ahead = self.mirrors.one_version_ahead('127.0.0.13')
+        environment = self.apt_environment(self.stock_line(primary, '/') + f'{build_only_source_line(ahead)}\n',
+                                           {BUILD_APT_SETTINGS.name: BUILD_APT_SETTINGS.read_text()})
+
+        self.assertEqual(self.candidate(environment), '2.0')
+
+    def test_without_a_second_source_the_package_cannot_be_downloaded(self):
+        primary = self.mirrors.answering_with_a_redirect('127.0.0.11', PackageMirrors.unreachable('127.0.0.12'))
+
+        self.assertIsNone(self.download(self.build_environment(primary)))
+
+
+class TestExtraSourcesNeverFailAnUpdate(AptCase):
+    """A mirror of the extra sources that answers but is gone or out of sync fails the update of apt itself; the
+    apt-get of the build repeats such an update without the extra sources, as the sources of the operating system
+    alone would have run it. Real apt runs on repositories of the test."""
+
+    def update(self, environment, program):
+        done = subprocess.run([program, 'update'], env=environment, capture_output=True, text=True, check=False,
+                              timeout=240)
+        return done.returncode, done.stderr
+
+    def environment_with_extra(self, primary, extra):
+        return self.apt_environment(
+            '', {BUILD_APT_SETTINGS.name: BUILD_APT_SETTINGS.read_text()},
+            {'stock.list': self.stock_line(primary, '/'), BUILD_APT_SOURCES.name: f'{build_only_source_line(extra)}\n'})
+
+    def bad_extra_mirrors(self):
+        return {'a mirror that is gone': self.mirrors.gone('127.0.0.12'),
+                'a mirror that is out of sync': self.mirrors.out_of_sync('127.0.0.13')}
+
+    def test_extra_mirror_that_is_gone_or_out_of_sync_fails_the_update_of_apt_itself(self):
+        primary = self.mirrors.holding_everything('127.0.0.11')
+        for name, extra in self.bad_extra_mirrors().items():
+            with self.subTest(name):
+                environment = self.environment_with_extra(primary, extra)
+
+                self.assertNotEqual(self.update(environment, 'apt-get')[0], 0)
+
+    def test_extra_mirror_that_is_gone_or_out_of_sync_fails_no_update_through_the_apt_get_of_the_build(self):
+        primary = self.mirrors.holding_everything('127.0.0.11')
+        for name, extra in self.bad_extra_mirrors().items():
+            with self.subTest(name):
+                environment = self.environment_with_extra(primary, extra)
+
+                code, _stderr = self.update(environment, str(BUILD_APT_GET))
+
+                self.assertEqual(code, 0)
+                self.assertTrue(any(self.lists.glob('127.0.0.11*_dists_bookworm_*')))
+
+    def test_healthy_extra_mirror_is_listed_in_the_update_of_the_build_and_the_update_is_not_repeated_without_it(self):
+        primary = self.mirrors.holding_everything('127.0.0.11')
+        extra = self.mirrors.holding_everything('127.0.0.13')
+        environment = self.environment_with_extra(primary, extra)
+
+        code, stderr = self.update(environment, str(BUILD_APT_GET))
+
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(any(self.lists.glob('127.0.0.13*_dists_bookworm_*')))
+        self.assertNotIn('operating system alone', stderr)
+
+    def test_update_that_the_sources_of_the_operating_system_alone_would_fail_ends_with_the_status_of_apt_get(self):
+        primary = self.mirrors.gone('127.0.0.11')
+        environment = self.environment_with_extra(primary, self.mirrors.holding_everything('127.0.0.13'))
+
+        code, _stderr = self.update(environment, str(BUILD_APT_GET))
+
+        self.assertNotEqual(code, 0)
+        self.assertEqual(code, self.update(environment, 'apt-get')[0])
+
+    def test_options_of_an_update_that_is_repeated_reach_apt_get_unchanged(self):
+        """An update that succeeds removes the index files of no source; `APT::Get::List-Cleanup=0` keeps them."""
+        primary = self.mirrors.holding_everything('127.0.0.11')
+        environment = self.environment_with_extra(primary, self.mirrors.gone('127.0.0.12'))
+        stray = self.lists / 'stray.example.invalid_dists_bookworm_InRelease'
+        stray.write_text('x')
+
+        without_the_option = self.update(environment, str(BUILD_APT_GET))
+        removed = not stray.exists()
+        stray.write_text('x')
+        with_the_option = subprocess.run([str(BUILD_APT_GET), 'update', '-o', 'APT::Get::List-Cleanup=0'],
+                                         env=environment, capture_output=True, text=True, check=False, timeout=240)
+
+        self.assertEqual((without_the_option[0], with_the_option.returncode), (0, 0))
+        self.assertTrue(removed)
+        self.assertTrue(stray.exists())
+
+    def test_command_that_succeeds_gives_the_same_output_as_apt_get(self):
+        primary = self.mirrors.holding_everything('127.0.0.11')
+        environment = self.environment_with_extra(primary, self.mirrors.holding_everything('127.0.0.13'))
+        self.update(environment, 'apt-get')
+        arguments = ['--print-uris', '-qq', 'download', PackageMirrors.PACKAGE]
+
+        through_the_build = subprocess.run([str(BUILD_APT_GET), *arguments], env=environment, capture_output=True,
+                                           text=True, check=False, timeout=120, cwd=self.scratch)
+        directly = subprocess.run(['apt-get', *arguments], env=environment, capture_output=True, text=True,
+                                  check=False, timeout=120, cwd=self.scratch)
+
+        self.assertEqual(directly.returncode, 0, directly.stderr)
+        self.assertEqual((through_the_build.returncode, through_the_build.stdout), (0, directly.stdout))
+
+    def test_command_other_than_an_update_is_not_repeated_without_the_extra_sources_and_ends_as_apt_get_ends(self):
+        primary = self.mirrors.holding_everything('127.0.0.11')
+        environment = self.environment_with_extra(primary, self.mirrors.holding_everything('127.0.0.13'))
+
+        done = subprocess.run([str(BUILD_APT_GET), 'download', 'no-such-package-in-any-source'], env=environment,
+                              capture_output=True, text=True, check=False, timeout=120, cwd=self.scratch)
+
+        directly = subprocess.run(['apt-get', 'download', 'no-such-package-in-any-source'], env=environment,
+                                  capture_output=True, text=True, check=False, timeout=120, cwd=self.scratch)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertEqual(done.returncode, directly.returncode)
+        self.assertNotIn('operating system alone', done.stderr)
 
 
 def _parse(path):

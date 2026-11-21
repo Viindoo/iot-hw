@@ -1,0 +1,10 @@
+# Package sources of the image build, beside the ones of the operating system; the image a customer writes does
+# not carry this file. The primary source answers each package with a redirect to a mirror, and apt retries that
+# mirror only: when the mirror does not answer, apt takes the package from another source that lists the same
+# version. preferences.d/viindoo-build.pref ranks each host named here below the stock source and must name the
+# same hosts. Same suite, architecture and components as /etc/apt/sources.list. A mirror named here that is gone
+# or out of sync fails no build: usr/local/bin/apt-get of this directory repeats a failed update without it.
+# Replace a mirror that stays gone by one of https://www.raspbian.org/RaspbianMirrors whose InRelease equals the
+# one of the primary source.
+deb [ arch=armhf ] http://www.mirrorservice.org/sites/archive.raspbian.org/raspbian/ bookworm main contrib non-free rpi
+deb [ arch=armhf ] http://mirror.us.leaseweb.net/raspbian/raspbian/ bookworm main contrib non-free rpi

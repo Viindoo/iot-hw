@@ -1,0 +1,28 @@
+#!/bin/bash
+# apt-get of the image build, found before the one of the operating system. An update that fails while the extra
+# sources of the build are listed is made again with the sources of the operating system alone, so that an extra
+# source (a mirror that is gone or out of sync) never fails a build the sources of the operating system pass. Every
+# other command, and an update that also fails without the extra sources, ends as it does with the real apt-get.
+set -o nounset
+
+readonly REAL=/usr/bin/apt-get
+readonly EXTRA_SOURCES=viindoo-build.list
+
+status=0
+"${REAL}" "$@" || status=$?
+[ "${status}" -ne 0 ] || exit 0
+case " $* " in
+    *" update "*) ;;
+    *) exit "${status}" ;;
+esac
+
+parts="$(/usr/bin/apt-config shell parts 'Dir::Etc::SourceParts/d' | sed "s/^parts='\\(.*\\)'\$/\\1/")"
+stock="$(mktemp --directory)"
+trap 'rm -rf "${stock:?}"' EXIT
+for file in "${parts}"*; do
+    if [ -e "${file}" ] && [ "${file##*/}" != "${EXTRA_SOURCES}" ]; then
+        ln -s "${file}" "${stock}/"
+    fi
+done
+echo "apt-get: update failed with the extra sources of the build; trying again with the sources of the operating system alone" >&2
+"${REAL}" -o "Dir::Etc::SourceParts=${stock}/" "$@"

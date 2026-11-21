@@ -45,6 +45,7 @@ jobs:
         run: |
           find box -name '*.sh' -print0 | xargs -0 -n1 bash -n
           bash -n box/system/usr/local/sbin/viin-box-first-start
+          bash -n box/build/apt/usr/local/bin/apt-get
       - name: ShellCheck
         run: |
           docker run --rm --volume "$PWD:/repo:ro" --workdir /repo \
@@ -53,7 +54,7 @@ jobs:
             box/install/lib.sh box/install/install_layer.sh box/install/install_on_raspios.sh \
             box/build/build_image.sh box/build/check_release.sh box/build/base-image.conf \
             box/system/apply.sh box/system/usr/local/sbin/viin-box-first-start \
-            box/dev/softbox/softbox.sh box/dev/softbox/container/entrypoint.sh \
+            box/build/apt/usr/local/bin/apt-get box/dev/softbox/softbox.sh box/dev/softbox/container/entrypoint.sh \
             box/dev/softbox/container/print-backend.sh
       - name: Workflow files
         run: |
